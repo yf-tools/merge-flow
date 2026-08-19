@@ -51,7 +51,7 @@ This power bundles no MCP server. It expects the user's own `glab` MCP server
 [MCP configuration docs](https://kiro.dev/docs/mcp/configuration/) for adding
 one. `git` is a hard requirement; everything else degrades gracefully.
 
-If [`jira-ticket-workflow`](../jira-ticket-workflow) is also installed, this
+If [`jira-ticket-workflow`](https://github.com/yf-tools/jira-ticket-workflow) is also installed, this
 skill calls its `get_project_profile` tool for richer detection (multi-
 ecosystem package managers, task runners, linters, review-checklist
 location). If it isn't installed, Step 1 derives the same values directly

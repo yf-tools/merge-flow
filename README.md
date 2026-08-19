@@ -7,7 +7,7 @@ configured.
 
 Its distinguishing feature is that **nothing project-specific is hardcoded.**
 The workflow derives the package manager, lint command, framework, monorepo
-tool and commit convention from the repo itself — from the [`jira-ticket-workflow`](../jira-ticket-workflow)
+tool and commit convention from the repo itself — from the [`jira-ticket-workflow`](https://github.com/yf-tools/jira-ticket-workflow)
 power's `project-scanner` if it's installed, or by reading the repo's own
 config files directly if it isn't. Neither path is required for the other:
 this power runs standalone.
@@ -53,7 +53,7 @@ install — see Requirements below for what to configure yourself.
   `mcp.json` — this power doesn't bundle one. See
   [Adding MCP servers](https://kiro.dev/docs/powers/create/#adding-mcp-servers).
 - `git` on PATH.
-- Optional: the [`jira-ticket-workflow`](../jira-ticket-workflow) power, for
+- Optional: the [`jira-ticket-workflow`](https://github.com/yf-tools/jira-ticket-workflow) power, for
   richer project detection and Jira time logging. Falls back gracefully if
   it's not installed.
 
