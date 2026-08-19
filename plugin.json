@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "gitlab-mr-review",
+  "version": "1.0.0",
+  "description": "ACTIVATE THIS POWER whenever the user pastes a GitLab merge request URL (including a bare '#note_' link) or says things like 'handle MR comments', 'address review feedback', 'fix reviewer comments', 'go through the comments on this MR', 'reply to the review comments', or 'resolve the MR threads'. Provides an end-to-end workflow for working through an existing merge request's review comments: fetch every thread, triage each one, fix, self-review, commit, push, reply inline, resolve the threads, and optionally log time to Jira if it's configured. GitLab only - the review-thread API differs on other hosts, and the skill stops and says so rather than improvising against GitHub or Bitbucket.",
+  "author": {
+    "name": "Youssef Fathallah"
+  },
+  "license": "MIT",
+  "keywords": [
+    "gitlab",
+    "merge-request",
+    "mr-comments",
+    "review-comments",
+    "code-review",
+    "merge-request-url",
+    "reviewer-feedback",
+    "resolve-threads",
+    "note_",
+    "review-workflow"
+  ]
+}
