@@ -7,7 +7,7 @@ description: End-to-end workflow for GitLab merge request review comments - fetc
 
 Triage and fix GitLab merge request review comments **one at a time** — each gets read, verified against the code, fixed, and confirmed before moving to the next.
 
-Nothing in this workflow is project-specific. Host, project path, package manager, lint command, branch name, commit format, and Jira site are all **derived at runtime** (Steps 0–1). Never hardcode them, and never carry values from a previous session — re-derive every time.
+Nothing in this workflow is project-specific. Host, project path, package manager, lint command, branch name, commit format, and Jira site are all **derived at runtime** (Steps 0–1), directly from the repo — never hardcoded, and never carried over from a previous session. This skill has no dependency on any other Kiro power; re-derive everything every time.
 
 ## The six rules that matter most
 
@@ -19,6 +19,30 @@ Nothing in this workflow is project-specific. Host, project path, package manage
 6. **Preview any steering-file change and stop.** It shapes every future request in the repo. (Step 12)
 
 Rules 2–6 are hard stops even when the change looks trivial. This list is exhaustive — there are no other gates.
+
+## Mistakes a user can hand you — check for these before acting
+
+This workflow reads a URL and a local repo, then acts on both. Neither is guaranteed to match what the user actually meant. Catch the mismatch before it costs a wasted branch switch, a fix applied to someone else's code, or a reply posted to the wrong MR — not after.
+
+- **Malformed or non-GitLab URL** (Step 0) — **stop and ask.** If the URL doesn't split cleanly on `/-/merge_requests/`, don't guess at a `project_path`/`iid` from a partial match. Say the URL doesn't look like a GitLab MR link and ask for the correct one, or — if it's clearly a GitHub/Bitbucket PR link — go straight to the host guard in Step 1 instead of attempting any GitLab API call with garbage values.
+- **MR belongs to a different project than the one open in this workspace** (Step 2) — **stop and ask.** Compare the MR's project path against the workspace's own `git remote get-url origin`. If they don't match, ask before Step 3 checks out anything — proceeding means checking out a branch that may not even exist in this repo, or worse, silently operating against the wrong codebase entirely.
+- **The MR isn't actually assigned to or authored by the current user** (Step 2) — **flag it, don't block.** This isn't necessarily wrong — reviewing on someone else's behalf is a legitimate ask — but it's also the single most common typo outcome (pasting `!490` when you meant `!409`). Check `author`/`assignees` against the identity `glab` is authenticated as (or ask, if that's not cheaply available). Mention it in your Step 2 recap and let the user's next reply confirm or correct course, rather than waiting on an explicit answer.
+- **The MR is `merged` or `closed`** (Step 2, already covered) — stop and ask before treating it as active work.
+- **The MR has zero comments** (`user_notes_count: 0`) (Step 4) — **stop and ask.** Don't manufacture a triage report from nothing. Say there's nothing to review — this is a signal the user picked the wrong MR or it hasn't been reviewed yet, not a workflow to push through anyway.
+- **The local branch has unrelated in-progress work** (Step 1/3, already covered by the dirty-tree check) — but also watch for a branch that's *clean* yet clearly not related to this MR (e.g. `git log` shows commits for a different ticket entirely with no relation to `source_branch`). If the checkout would silently discard the user's mental model of "what I'm currently working on," say what branch you're switching from and to, even when the tree is clean.
+- **A reviewer comment references a file or line that no longer exists** (Step 5) — **flag it, don't block.** Say the referenced code is gone (renamed, deleted, or moved) as an item in the Step 6 report, and let the user decide whether it was already handled elsewhere or needs a fresh look at the new location.
+
+Most of these fold into the six existing hard stops — the host guard, Step 2's merged/closed check, Step 6's report — rather than adding new ones. The two that genuinely need their own pause (malformed URL, wrong project) are the two where continuing could touch the wrong code before you've said anything at all; the rest are lower-risk and just need to be surfaced as part of what you're already reporting.
+
+## Formatting every report to the user
+
+Every blocking step below (6, 8, 9, 10, 12) presents a list of things — comments, fixes, options, replies — and every one of them risks turning into an unreadable wall of text if you free-style the layout. Follow the same three rules everywhere, not just where a step spells it out:
+
+1. **One item, one block.** Give each item its own header line (bold or `###`), then put each field — quote, proposed action, file path — in its own paragraph with a blank line before and after. Never write a field as an indented line directly under a list number: without a blank line, CommonMark treats it as a "lazy continuation" of the same paragraph, and every renderer reflows it into one dense run-on block.
+2. **Tables are for short, single-line facts only** (a file path, a status, a count). The moment a column would hold a full sentence — a reviewer quote, a proposed reply, a multi-clause explanation — stop using a table and switch to the one-block-per-item style from rule 1. A table cell doesn't wrap a paragraph; it just cuts it off or crushes it.
+3. **Separate items with a horizontal rule (`---`) or a blank line**, so a report with five items reads as five distinct chunks, not one paragraph five times as long.
+
+The templates below already follow this. When a step doesn't give you an exact template (Steps 1, 2, 4, 11), still apply these three rules to whatever you report.
 
 ## Step 0 — Parse the MR URL
 
@@ -40,23 +64,16 @@ Split on the `/-/` separator — it's the reliable delimiter, since `{project_pa
 
 **The `#note_` fragment is a starting point, never the full set.** It's the comment the user happened to click. Treat it as one entry in the list you fetch in Step 4, and verify it appears there.
 
-If the user names an MR without a URL, derive host and project path from `vcs.remoteUrl` in Step 1.
+If the user names an MR without a URL, derive host and project path from `git remote get-url origin` in Step 1.
+
+**If the URL doesn't split cleanly on `/-/merge_requests/{iid}`, stop here — don't proceed with a partial match.** A GitHub PR link (`.../pull/123`) or a Bitbucket one (`.../pull-requests/123`) will fail this split; so will a plain typo. Do not invent a `project_path` or `iid` from a best-effort guess — that value poisons every API call downstream with no visible error until it's confusing. Instead:
+
+- If it's recognizably a GitHub or Bitbucket PR URL, skip straight to the host guard in Step 1 and say so rather than attempting a GitLab call.
+- If it's not recognizable as any of the three, show the user what you parsed and ask them to confirm or repaste the URL.
 
 ## Step 1 — Profile the Project
 
-This step establishes the project's real conventions. It has a **preferred path and a fallback path** — the skill must work either way, so never treat the tool as a hard requirement.
-
-### Preferred: `get_project_profile`
-
-If the `jira-ticket-workflow` power is installed, call its `project-scanner` tool once, passing the workspace root explicitly:
-
-```
-get_project_profile({ workspace_path: "{absolute workspace root}" })
-```
-
-### Fallback: derive it yourself
-
-If that power isn't installed, the server isn't running, or the call errors, **don't stop and don't guess** — derive the same values directly. It's a handful of cheap reads:
+This step establishes the project's real conventions. This power ships no scanner and depends on no other power — derive every value yourself, directly from the repo. It's a handful of cheap reads:
 
 | Value | Derive it from |
 |---|---|
@@ -72,32 +89,27 @@ If that power isn't installed, the server isn't running, or the call errors, **d
 
 Non-JS ecosystems have equivalents (`Cargo.toml`, `pyproject.toml`, `go.mod`, `pom.xml`); the principle is unchanged — read the real config, don't assume.
 
-### Values used downstream
+### What you carry forward from this step
 
-However they were obtained, these drive the rest of the workflow:
+Keep these in mind as plain facts, not a structured object — there's no schema to satisfy, just answers you'll reuse:
 
-| Value | Used for |
-|---|---|
-| `vcs.host` | Host guard below |
-| `vcs.remoteUrl` | Fallback source for host + project path when no URL was pasted |
-| `packageManager.name` / `runCommandPrefix` | Lint command in Step 7 — never assume `pnpm`/`npm`/`yarn`. `null` outside JavaScript |
-| `scripts` | The **full** script map. Monorepos often have `lint:{project}` entries and no generic `lint` — read it, don't assume. JavaScript only |
-| `commands.lint` | Pre-resolved lint command that works on any ecosystem. Step 7's rung 3 |
-| `monorepoTools` | Array. If it includes `nx`, lint targets can be invoked directly when no script matches |
-| `frameworks` | Array — whether framework-specific steering (e.g. `angular-development`) applies at all. Check every entry: a polyglot repo may need two rule sets |
-| `gitHooks.preCommitContent` / `prePushContent` | Step 9 — what actually runs on commit and push, and how slow it'll be |
-| `stagedFormatter.scriptName` | The formatter to run ahead of the pre-commit hook |
-| `git.currentBranch` | Step 3 branch comparison |
-| `git.isDirty` | Step 3 safety check before switching branches |
-| `git.commitConvention` | Commit message shape in Step 8 — including the `author` fallback when the repo-wide format is `null` |
+- The git host and project path — used for the host guard below, and as a fallback source when no URL was pasted (`git remote get-url origin`).
+- The package manager and its run prefix (e.g. `pnpm` → `pnpm run`) — Step 7's lint command. Leave this blank for non-JS repos rather than guessing.
+- The full `scripts` map from `package.json`, if JS — monorepos often expose `lint:{project}` entries and no generic `lint` at all.
+- Any monorepo tool detected (`nx`, `turborepo`, `lerna`, pnpm workspaces) — Step 7's fallback rung.
+- Any framework detected — decides whether framework-specific steering (e.g. an `angular-development` rule set) applies at all. A polyglot repo may need more than one.
+- The pre-commit and pre-push hook contents — Step 9, both for what runs and how slow it'll be.
+- The formatter script the pre-commit hook invokes, if any — run it yourself ahead of the hook in Step 9.
+- The current branch and whether the tree is dirty — Step 3's safety check before switching branches.
+- The commit message convention you can see in the real `git log` output — Step 8's commit message shape.
 
-**Host guard.** If `vcs.host` is not `gitlab`, stop and say so plainly:
+**Host guard.** If the git host isn't a GitLab instance, stop and say so plainly:
 
 > This repo's remote is {host}, not GitLab. This skill only covers GitLab merge requests — the review-thread API differs on other hosts. Want me to handle the review comments manually instead?
 
 Do not improvise `gh` commands from a GitLab workflow.
 
-Treat any `null` field as "not detected" — ask or skip the dependent step. Don't substitute a default.
+Treat anything you couldn't detect as "not detected" — ask or skip the dependent step. Don't substitute a default.
 
 ## Step 2 — Fetch MR Details
 
@@ -119,19 +131,24 @@ Extract:
 
 Parse from the title:
 
-- **Ticket key** — `[A-Z]+-\d+`. The project prefix is whatever the MR uses; never assume a specific one.
+- **Ticket key** — `[A-Z]+-\d+`. The project prefix is whatever the MR uses; never assume a specific one. **If the title has no match at all** (no ticket-shaped prefix), don't invent one and don't leave `{TICKET-KEY}` as a literal placeholder in the eventual commit message. Fall back to omitting the ticket segment from the commit message template in Step 8, and mention once that no ticket key was found in the title.
 - **Commit type** — the word before the parentheses (`fix`, `feat`, `chore`, `refactor`, …). Reuse this exact type in Step 9 rather than defaulting to `fix`.
 
 If `state` is `merged` or `closed`, tell the user and ask whether to proceed (e.g. as a follow-up fix on a new branch).
 
+**Sanity-check the MR itself before going further — this is where a wrong paste surfaces:**
+
+- **Wrong project — actually stop and wait for an answer.** Compare this response's project (from the `project_id`/`web_url` in the payload, or just the `project_path` you already parsed) against the workspace's own remote (`git remote get-url origin`, read in Step 1). If they don't match, this is higher-risk than the author check below: Step 3 is about to check out a branch, and doing that against the wrong repo can silently touch code that has nothing to do with this MR. Ask before Step 3 runs: *"This MR belongs to `{mr project}`, but this workspace's remote is `{local project}`. Wrong URL, or is this intentional (e.g. reviewing a fork)?"*
+- **Not your MR — flag it, but don't block on it.** Check `author.username` (and `assignees[]`, if present) against whatever identity you can confirm — the account `glab` is authenticated as, if cheaply available, or ask the user directly if not. A mismatch isn't automatically wrong (reviewing on someone else's behalf is normal), but it's also the shape of a simple typo (`!490` vs `!409`). Mention it as a line in your Step 2 recap — *"This MR is authored by {author}, not you — flagging in case that's a typo."* — and let the user's next message confirm or correct course, rather than waiting for an explicit answer before continuing.
+
 ## Step 3 — Check Out the Right Branch (before touching any code)
 
-**Check `git.isDirty` (Step 1) first — it gates every path below, not just the switch.**
+**Check the dirty-tree status from Step 1 first — it gates every path below, not just the switch.**
 A dirty tree breaks a checkout *and* a pull: `git pull` over uncommitted changes
 either aborts on conflict or strands you mid-merge. If dirty, stop and ask whether
 to stash, commit, or discard. Never move over uncommitted work silently.
 
-With a clean tree, compare `git.currentBranch` (Step 1) against `source_branch` (Step 2).
+With a clean tree, compare the current branch from Step 1 against `source_branch` (Step 2).
 
 **Already on it** — `git pull` to catch up, then proceed.
 
@@ -180,11 +197,13 @@ A thread with no `position` is a general MR-level comment; triage it as a genera
 
 If the user wants only open items, filter to `resolved: false` **after** fetching everything, so the counts still reconcile.
 
+**If `user_notes_count` was 0 in Step 2, there's nothing to reconcile — stop here rather than continuing into Step 5 with an empty set.** Tell the user this MR has no review comments yet and ask what they want to do (wait for a review, or confirm this is the right MR). Producing a triage report with zero items in Step 6 wastes a turn on a report that says nothing.
+
 ## Step 5 — Triage Each Comment (investigation only, no edits)
 
 One at a time. Investigate, but change nothing yet:
 
-1. Read the referenced file at the referenced line. Use `grep_search` / `read_code` if the code moved since the comment was posted.
+1. Read the referenced file at the referenced line. Use `grep_search` / `read_code` if the code moved since the comment was posted. **If the file doesn't exist at that path anymore, or the line is out of range for the current file** (renamed, deleted, or moved since the comment was posted), don't silently skip it or guess a new location. Classify it as **✔️ Already addressed** only if you can show a later commit actually moved/removed that code on purpose; otherwise flag it explicitly in the triage report as *"file/line no longer exists — needs a fresh look"* so the user decides whether it still applies.
 2. Check whether a later commit already resolved it.
 3. **If the reviewer names an API, mixin, or helper, confirm it exists before judging the comment.** Search the dependency tree, not just project source — a project-wide `grep_search` returning nothing usually means the symbol lives in `node_modules` (or the language's vendor directory), not that the reviewer is wrong. Read the real definition so your fix uses the real signature. Only push back after confirming it genuinely doesn't exist.
 4. Classify:
@@ -195,28 +214,57 @@ One at a time. Investigate, but change nothing yet:
    - **✔️ Already addressed** — note what resolved it
 5. Work out the concrete fix (file, change, one sentence) without applying it.
 6. **Check whether comments interact.** Two comments on one file often imply a single combined fix, or one sets a convention the other must follow. Settle that here so you don't rewrite the same line twice.
-7. If any entry in `frameworks` from Step 1 matches a steering rule set (e.g. `angular` → `angular-development`), check the fix against it now. Match against the file you actually edited — in a polyglot repo the Angular rules don't apply to a change in the Python service.
+7. **Check the fix against whatever project conventions apply to the file you actually edited.** Judge relevance from what each rule set says it covers, not from its filename — a steering file describing itself as "Angular component conventions" applies to a `.ts` component and not to a change in the Python service. In a polyglot repo more than one set may apply; in a polyglot repo the wrong one applying is worse than none.
+8. **If this skill's own memory file (`review-feedback-patterns.md`, written by Step 12) exists in this repo, read it now and check this comment against it.** Hardcoding this one name is correct — unlike a project's own conventions, this file is created by this skill, so its name is known. It exists specifically so a recurring pattern from a *previous* MR gets caught before the reviewer has to flag it again; written once and never consulted, it does nothing. If this comment matches an existing entry, say so in the triage report (e.g. *"matches an existing rule, ×2 already — this would be ×3"*) so the user sees the pattern repeating, not just this one instance of it.
 
 ## Step 6 — Present the Triage Report (BLOCKING)
 
 Report every comment, then stop. Do not continue until the user replies.
 
+**Never write the reviewer quote and proposed action as indented lines directly under a numbered item.** Without a blank line between them, CommonMark treats them as a "lazy continuation" of the same paragraph — every renderer reflows the number, file:line, quote, and action into one dense wrapped block, which is unreadable. Give each field its own line with a real line break between them, and separate items with a horizontal rule so the report scans instead of reads like a wall of text:
+
 ```
 ### MR !{iid} — {title}
+
 {N} comment(s) found ({X} unresolved, {Y} already resolved) — matches user_notes_count ✓
 
-1. [✅ Fix] {file}:{line}
-   Reviewer ({author}): "{trimmed comment}"
-   → Proposed action: {one sentence}
+---
 
-2. [...]
+**1. [✅ Fix] `{file}:{line}`**
+
+Reviewer ({author}): "{trimmed comment}"
+
+→ **Proposed action:** {one sentence}
+
+---
+
+**2. [💬 Question] `{file}:{line}`**
+
+Reviewer ({author}): "{trimmed comment}"
+
+→ **Proposed action:** {one sentence}
+
+---
+
+**3. [✅ Fix] _(general MR comment)_**
+
+Reviewer ({author}): "{trimmed comment}"
+
+→ **Proposed action:** {one sentence}
+
+---
 ```
+
+A thread with no `position` (Step 4) is a general MR-level comment, not tied to a file or line — use `_(general MR comment)_` in place of `` `{file}:{line}` `` for that item, the same convention Step 10 uses for its own general-comment row.
+
+Each field — the header, the quote, and the action — sits in its own paragraph with a blank line on both sides. That blank line is what forces a hard break in every markdown renderer; don't drop it to save space.
 
 Close with a direct question:
 
 > Want me to proceed with the "Fix" items? Let me know how to handle the "Question"/"Disagree" ones.
 
 - **Never skip this report**, however trivial the comments look.
+- **Never collapse fields onto adjacent lines** to shorten the report — a long report with breathing room beats a short one that reads as a single paragraph.
 - The user may approve all, approve a subset, override a classification, or answer flagged items inline. Follow their reply.
 - A bare "go ahead" approves **Fix** and **Nitpick** only. Keep holding **Question** and **Disagree** until explicitly resolved.
 
@@ -227,76 +275,118 @@ For each approved item:
 1. Read the exact code before changing it.
 2. Apply the fix with `str_replace` (`fs_write` for larger rewrites).
 3. Follow existing project conventions, including any framework steering identified in Step 5.
-4. Lint using the profile from Step 1 — never a hardcoded package manager, and never assume a bare `lint` script exists. Resolve the command in this order:
+4. Lint using what you found in Step 1 — never a hardcoded package manager, and never assume a bare `lint` script exists. Resolve the command in this order:
 
-   1. **Project-scoped script** — monorepos usually expose one script per project (`lint:mobile`, `lint:components-ui`, …) and no generic `lint` at all. Find the entry in `scripts` matching the library or app you edited:
+   1. **Project-scoped script** — monorepos usually expose one script per project (`lint:mobile`, `lint:components-ui`, …) and no generic `lint` at all. Find the entry in `package.json`'s `scripts` matching the library or app you edited:
       ```
-      {packageManager.runCommandPrefix} lint:{project}
+      {run prefix} lint:{project}
       ```
-   2. **Monorepo runner** — if no matching script exists and `monorepoTools` includes `nx`, invoke the target directly:
+   2. **Monorepo runner** — if no matching script exists and the monorepo tool is `nx`, invoke the target directly:
       ```
-      {packageManager.name} nx lint {project}
+      {package manager} nx lint {project}
       ```
-   3. **`commands.lint` from the profile** — already resolved with the right precedence (task-runner target → package script → ecosystem default), and it's the only rung that works outside JavaScript:
-      ```
-      {commands.lint.command}
-      ```
-      This is what makes the step function on a Python or Rust repo, where `runCommandPrefix` is `null` and `scripts` is empty. Mention `commands.lint.source` when reporting, so the user can see whether it came from their Makefile or a generic default.
+   3. **Ecosystem default** — a generic `lint` script (JS) or the equivalent for the ecosystem you detected (`ruff`/`flake8` for Python, `cargo clippy` for Rust, a Makefile `lint` target, …). Mention where the command came from when reporting, so the user can see whether it's project convention or a generic fallback.
    4. **Nothing matches** — say so and skip. Don't invent a command.
 
-   Prefer the narrowest scope that covers your change. Rung 1 beats rung 3 for exactly this reason: a repo-wide `check` script that lints and builds every app can take minutes, while linting the one affected project takes seconds. Only drop to `commands.lint` when nothing project-scoped exists.
+   Prefer the narrowest scope that covers your change. Rung 1 beats rung 3 for exactly this reason: a repo-wide `check` script that lints and builds every app can take minutes, while linting the one affected project takes seconds. Only drop to a broader command when nothing project-scoped exists.
 5. Confirm in one line what changed and which comment it addresses, then move on.
 
 Keep fixes traceable per comment — don't merge unrelated changes to the same file into one edit.
 
 ### Self-review pass (after all fixes, before presenting the summary)
 
-When `reviewChecklist` from Step 1 has `checklistContent` (a review checklist was detected in the project's AI-instruction files), **apply it now** against the actual staged diff — not from memory of what you changed, but from `git diff --cached` or `git diff` output.
+Before Step 8, re-read the actual diff (`git diff` for unstaged or `git diff --cached` for staged) — not from memory of what you changed, but from the real output — and check it against whatever review conventions this project actually has.
 
-Only apply checklist items relevant to the files you touched. A 40-item checklist against a 3-line diff should produce 2–3 relevant checks, not 40 lines of "N/A."
+#### 1. Discover review resources by what they say they do, not by their filename
 
-If the checklist catches something:
-- Fix it silently (same as a lint fix — no separate approval round).
-- Mention it in the Step 8 summary as "caught by self-review checklist" so the user knows the checklist earned its keep.
+**Never match on a fixed list of filenames.** Every project names these differently — `self-review.md`, `pre-flight.md`, `merge-readiness.md`, `definition-of-done.md`, or something with no obvious keyword at all — and a hardcoded list misses all the ones you didn't predict. Instead, use the fact that steering files, skills, and rule files nearly always **describe themselves**, and judge from that description.
 
-**Three-tier degradation:**
+Look wherever this project keeps agent-facing instructions. Common homes, as **hints and not an exhaustive list**:
 
-1. `checklistContent` is non-null → apply it directly. Content is already inlined from Step 1.
-2. `checklistContent` is null but `found` is true → instruction files exist but none matched the review keyword pattern. Scan `allSources` file names; if one looks relevant (e.g. a file named `conventions.md` or `standards.md`), read it and apply any review-shaped rules. If nothing fits, skip.
-3. `found` is false → no AI instruction files at all. Run a **generic built-in pass** instead:
-   - Re-read the actual diff (`git diff` for unstaged or `git diff --cached` for staged). Compare what's there against what you *think* you changed — catch accidental leftover `console.log`, `debugger`, commented-out code, or unrelated file changes that got staged.
-   - Confirm every change traces to a stated reviewer comment (no scope creep).
-   - Scan the diff for accidentally-added secrets (API keys, tokens, passwords in string literals).
+- `.kiro/steering/` — steering files, each with frontmatter that usually carries a `description` and an `inclusion` mode
+- `.kiro/skills/` or a `skills/` directory — each skill's `SKILL.md` has a frontmatter `description` stating when to use it
+- Repo-root agent instructions under whatever name this project uses — `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.cursor/rules/*.mdc`, `.github/copilot-instructions.md`, and equivalents
+- Ordinary contributor docs that often carry the same content — `CONTRIBUTING.md`, `docs/`, a PR/MR template
 
-This pass is silent when it finds nothing. It never blocks or asks questions — it either fixes inline or reports in Step 8. The user doesn't interact with it directly.
+For each candidate you find, **read its `description` (or its opening lines if it has no frontmatter) and decide from that whether it's about reviewing, verifying, or checking work before it ships.** A file whose description says "checklist to run before opening a PR" qualifies regardless of what it's called. A file whose description says "how to set up the local database" doesn't, no matter how many review-ish words appear in its filename.
+
+Two things worth knowing while you look:
+
+- A steering file with `inclusion: manual` is **not** already in your context the way an always-included one is. Reading it here is the only way you'll see it — which is exactly the case this discovery step exists for.
+- If this skill's own memory file (`review-feedback-patterns.md`, written by Step 12) is present, treat it as required reading rather than a candidate to weigh. Every rule in it came from a real reviewer catching something on a past MR in this repo. If it's never read back, its `×N` counts are just numbers nobody acts on.
+
+#### 2. Offer what you found — don't silently apply it
+
+If discovery turns up something relevant, **say what you found and offer to run it**, rather than either ignoring it or quietly applying it. The user knows their own conventions and may have a reason to skip. Phrase it plainly:
+
+> Found `.kiro/steering/code-review-self.md` — its description says it's a self-review checklist to run before pushing. Want me to verify the changes against it before I commit?
+
+If they say yes, apply only the items relevant to the files you actually touched — a 40-item checklist against a 3-line diff should produce 2–3 relevant checks, not 40 lines of "N/A." If they decline, note that and move on.
+
+**Fold this offer into the Step 8 summary rather than raising it as its own separate pause.** Step 8 is already a hard stop asking "ready to commit and push?" — asking "and should I run this checklist first?" in the same breath is one decision point instead of two, and keeps this workflow at six gates rather than sprouting a seventh.
+
+#### 3. Always run the generic pass regardless
+
+Whether or not a project-specific resource was found or run, do this much yourself — it's cheap and catches the mistakes that no checklist bothers to write down:
+
+- Compare the diff against what you *think* you changed — catch accidental leftover `console.log`, `debugger`, commented-out code, or unrelated file changes that got staged.
+- Confirm every change traces to a stated reviewer comment (no scope creep).
+- Scan the diff for accidentally-added secrets (API keys, tokens, passwords in string literals).
+
+Anything this catches, fix silently — same as a lint fix, no separate approval round.
+
+#### 4. Report what happened, in the Step 8 summary
+
+Never let this pass stay invisible. In the Step 8 summary, state:
+
+- What you found, named, and what its description said it was for — plus whether it was run, offered, or declined.
+- If discovery turned up nothing relevant, say where you looked and ask once whether there's a review step you should know about for next time.
+- Anything the pass actually caught and fixed.
 
 ## Step 8 — Present the Final Summary (BLOCKING)
 
-Once all approved fixes are in and lint passes:
+Once all approved fixes are in and lint passes, present this shape — one line per fixed comment, not a paragraph, and every open item called out separately so nothing needing the user's attention gets buried:
 
-1. Summarize:
-   - Each comment fixed, one line apiece
-   - Files modified (`git status --short`)
-   - Items still needing user input (questions, disagreements)
-   - Anything skipped, and why
-   - The commit message you intend to use, built from `git.commitConvention.suggestedFormat` with the type and ticket key from Step 2:
-     ```
-     {type}({TICKET-KEY}): address MR review comments
-     ```
-     When `suggestedFormat` is `null` (a `mixed-or-freeform` repo), fall through in this order before asking:
-     1. `git.commitConvention.author.suggestedFormat` — the repo may be inconsistent while this contributor is not.
-     2. If that's `null` too because `author.lowConfidence` is set, look at the **MR title itself** from Step 2. It's a commit-shaped string the reviewer already accepted, so mirroring its type and scope is the safest inference.
-     3. Still nothing → ask the user once. Never invent a convention.
+```
+### Summary — ready to commit
 
-2. Ask:
-   > All fixes are applied and lint passes. Ready to commit and push?
-   >
-   > - **Commit message:** `{type}({TICKET-KEY}): address MR review comments`
-   > - **Time spent on this review pass?** (e.g. `1h`, `30m`, `2h 30m` — or skip)
-   >
-   > (yes / let me review first / adjust message / skip time)
+**Fixed (N)**
+- `{file}:{line}` — {what changed, one line}
+- `{file}:{line}` — {what changed, one line}
 
-3. **STOP. No commit. No push. Wait for explicit approval.**
+**Files modified**
+- `{file}` ({+X / -Y})
+- `{file}` ({+X / -Y})
+
+**Still needs your input**
+- `{file}:{line}` — {question or disagreement, one line}
+
+**Skipped**
+- `{file}:{line}` — {what, and why, one line}
+
+**Self-review**
+- Generic diff scan: {clean / caught {what}, fixed}
+- {Found `{path}` — its description says {what it's for}. Run it against these changes before committing? / Looked in {where you looked} — nothing describing itself as a review or pre-push check. Is there one I should know about for next time?}
+
+---
+
+**Commit message:** `{type}({TICKET-KEY}): address MR review comments`
+
+Ready to commit and push? (yes / let me review first / adjust message)
+**Time spent on this review pass?** (e.g. `1h`, `30m`, `2h 30m` — or skip)
+```
+
+Omit any section that's empty (no skipped items → drop that heading entirely, don't write "none") — **except Self-review, which always appears**, since it's the only place that pass surfaces to the user at all.
+
+**If the Self-review section offered a discovered resource, treat the user's answer to it as part of this gate.** "Yes, run it" means run it, report what it found, and re-present this summary before committing — not commit first and check afterward. A plain "yes" to the commit question with no mention of the checklist means they're fine proceeding without it; don't re-ask.
+
+For the commit message, match the convention you saw in `git log` (Step 1), with the type and ticket key from Step 2. If the log history is inconsistent or you can't confidently read a convention from it, fall through in this order before asking:
+
+1. Look at the commits made by the same author on this branch — the repo may be inconsistent while this contributor is not.
+2. If that's still unclear, look at the **MR title itself** from Step 2. It's a commit-shaped string the reviewer already accepted, so mirroring its type and scope is the safest inference.
+3. Still nothing → ask the user once. Never invent a convention.
+
+**STOP. No commit. No push. Wait for explicit approval.**
 
 If the user says "let me review first", wait. Re-present the summary after any further edits.
 
@@ -304,10 +394,10 @@ If the user says "let me review first", wait. Re-present the summary after any f
 
 ### 1. Read the hooks before running anything
 
-Neither hook should be a surprise:
+Neither hook should be a surprise — you already read both in Step 1:
 
-- `gitHooks.preCommitContent` typically runs a staged-file formatter. Run that command yourself first (`stagedFormatter.scriptName`) so the hook becomes a fast no-op. On the Step 1 fallback path this field won't exist — read `.husky/pre-commit` directly and use whatever script it invokes.
-- `gitHooks.prePushContent` is often much heavier — a full lint-and-build `check` across every app. **Don't start it. Commit first, then present the choice in section 3 and wait.**
+- The pre-commit hook typically runs a staged-file formatter. Run that command yourself first (whatever script `.husky/pre-commit` invokes) so the hook becomes a fast no-op.
+- The pre-push hook is often much heavier — a full lint-and-build `check` across every app. **Don't start it. Commit first, then present the choice in section 3 and wait.**
 
 ### 2. Stage and commit
 
@@ -318,7 +408,7 @@ Run both as terminal commands — see the note at the end of this step.
 
 ### 3. The pre-push hook decision (BLOCKING)
 
-When `prePushContent` runs builds rather than a quick check, say what it will do and let the user pick.
+When the pre-push hook runs builds rather than a quick check, say what it will do and let the user pick.
 
 **Format the options as a real markdown list, each on its own line.** Do not put them in a blockquote and do not run them together in a paragraph — consecutive lines inside a blockquote collapse into one line when rendered, which makes a three-way choice unreadable at exactly the moment the user has to decide something.
 
@@ -340,22 +430,6 @@ Then wait for the answer.
 
 **Never choose (c) yourself.** A hook exists because someone wanted it enforced; a tool shouldn't bypass it unilaterally. But if the user picks (c), that's a legitimate choice — carry it out in section 4 without arguing.
 
-When (c) is used, **say so in the MR** so review isn't misled. Reviewers assume the hook ran unless told otherwise.
-
-This is the one legitimate exception to Step 10's threaded-reply rule: the disclosure doesn't belong to any reviewer's thread, so it goes up as a **general MR comment**. Include it in the Step 10 preview table as its own row so the user approves the wording, then post it with:
-
-```
-mcp_gitlab_glab_api
-  args:  ["projects/{project_path_encoded}/merge_requests/{iid}/notes"]
-  flags: {
-    "method": "POST",
-    "field": ["body=Pushed with `--no-verify` — pre-push lint/build skipped, relying on CI."],
-    "hostname": "{host}"
-  }
-```
-
-Note the endpoint is `/notes`, not `/discussions/{id}/notes`.
-
 **Mention the timeout up front.** On a monorepo building several apps, (a) will very likely be killed mid-hook — verified on a real repo where the mobile production build alone ran past ten minutes. Saying so makes (b) and (c) informed choices rather than fallbacks.
 
 **If the option they chose then fails, don't escalate to a more permissive one.** Choosing (a) is not consent to (c) when (a) times out. Report what failed, confirm the actual state (`git status -sb` and `git log --oneline -1` — a hook killed mid-run usually means nothing was pushed), and re-offer the remaining options.
@@ -373,7 +447,7 @@ If the remote diverged (someone else pushed to the MR branch), pull or rebase fi
 
 ### Use terminal commands, not git MCP tools
 
-When `gitHooks.manager` is set, run `git add`, `git commit` and `git push` as
+When git hooks are present (Step 1), run `git add`, `git commit` and `git push` as
 **terminal commands** (`execute_pwsh`). Do not use `mcp_git_git_add` /
 `mcp_git_git_commit` — hooks execute either way, but through an MCP tool you get
 no visible output, no timeout, and no TTY. A stalled hook (e.g. `pretty-quick`
@@ -389,24 +463,27 @@ After the push, prepare replies — but post nothing yet.
 
 ### Preview (BLOCKING)
 
+A reply is a full sentence, so don't put it in a table cell — a cell truncates or crushes it. Use one block per thread instead:
+
 ```
 ### Proposed MR thread replies
 
-| # | Thread (file:line) | Proposed reply |
-|---|---|---|
-| 1 | _banner.scss:17 | "Fixed — switched to the directional radius mixin. See latest commit." |
-| 2 | _(general MR comment)_ | "Pushed with `--no-verify` — pre-push lint/build skipped, relying on CI." |
+---
+
+**1. `_banner.scss:17`**
+
+→ "Fixed — switched to the directional radius mixin. See latest commit."
+
+---
 
 Post these replies and resolve the threads? (yes / edit #N / skip)
 ```
-
-Row 2 only appears if the user chose `--no-verify` in Step 9.
 
 **STOP until the user approves.** They may approve all, edit a specific reply, or skip some — don't post or resolve anything skipped.
 
 ### Reply on the thread
 
-Use the discussion `id` captured in Step 4. Replies must be **threaded under the reviewer's comment**, never posted as a general MR comment — the sole exception is the `--no-verify` disclosure from Step 9, which has no parent thread:
+Use the discussion `id` captured in Step 4. Replies must be **threaded under the reviewer's comment**, never posted as a general MR comment:
 
 ```
 mcp_gitlab_glab_api
@@ -420,9 +497,11 @@ mcp_gitlab_glab_api
 
 For **Question** or **Disagree** items, never reply with a fix confirmation. Post the user's answer or approved reasoning instead.
 
+For **✔️ Already addressed** items, reply and resolve the same as a Fix — but say what already handled it (e.g. "Already fixed in `a3bbad5b` before this review pass — no further change needed.") rather than describing a change you just made.
+
 ### Resolve
 
-Immediately after replying, in the same pass:
+Immediately after replying, in the same pass, resolve every thread you replied to on behalf of a **Fix**, **Nitpick**, or **Already addressed** item:
 
 ```
 mcp_gitlab_glab_api
@@ -461,7 +540,7 @@ guess why the change was made.
 
 ### What earns an entry
 
-Not every comment does. Most don't. Apply this test to each **✅ Fix** and **🔵 Nitpick** from Step 5 — record it only if **all three** hold:
+Not every comment does. Most don't. Apply this test to each **✅ Fix** and **🔵 Nitpick** from Step 5, **plus any 💬 Question or ⚠️ Disagree item that turned into an actual code change after the user's Step 6 answer** — the Step 5 label was your first guess before the user weighed in, and a question that resolved into "yes, change it" is exactly as eligible as something you labeled Fix from the start. Record it only if **all three** hold:
 
 1. It's a **convention or pattern**, not a one-off. ("Use the directional radius mixin" qualifies; "typo in a variable name" doesn't.)
 2. It can be phrased as an **instruction followable before writing code**, not a description of what went wrong.
@@ -577,7 +656,7 @@ If the user skips, drop it — don't re-raise it next run.
 
 ## Step 13 — Where this skill ends
 
-The threads are resolved, the worklog is logged. **Stop here.** Do not:
+The threads are resolved, the worklog is logged. Say what happened in Step 12 too — even a one-line "no recurring patterns worth recording this time" closes the loop, since a summary that mentions everything except the step most likely to be silently skipped reads as incomplete. **Stop here.** Do not:
 
 - ❌ Merge or approve the MR
 - ❌ Delete the source branch
@@ -628,27 +707,30 @@ This affects `/discussions`, `/notes`, `/projects`, and every other collection. 
 
 | Step | Action |
 | --- | --- |
-| Parse URL | Split on `/-/` → `host`, `project_path` (encode `/` → `%2F`), `iid`, optional `note_id` |
-| Profile | `get_project_profile` if available; else derive from lockfile, `package.json`, `.husky/`, `git log` — never a hard dependency |
-| Host guard | `vcs.host != gitlab` → stop, tell the user, don't improvise `gh` |
-| Fetch MR | `glab_api` → `.../merge_requests/{iid}` → `source_branch`, title, type, `user_notes_count` |
-| Branch | Compare to `git.currentBranch`; check `git.isDirty` before switching |
-| Fetch comments | `glab_api` → `.../discussions` with `output: ndjson`; drop `system: true`; **reconcile vs `user_notes_count`** |
-| Triage | Classify each, verify reviewer-named APIs in `node_modules`, check cross-comment interactions — no edits |
-| **Report** | **Full triage report, wait for go-ahead — hard stop** |
-| Fix | One at a time; lint via `lint:{project}` script → `nx lint {project}` → generic `lint`, narrowest scope that covers the change. Self-review pass at the end (checklist if detected, generic diff scan if not) |
+| Parse URL | Split on `/-/` → `host`, `project_path` (encode `/` → `%2F`), `iid`, optional `note_id`. Malformed/non-GitLab URL → stop and ask, don't guess |
+| Profile | Derive directly from lockfile, `package.json`, `.husky/`, `git log`, `git status` — no external tool, no other power |
+| Host guard | Git host isn't GitLab → stop, tell the user, don't improvise `gh` |
+| Fetch MR | `glab_api` → `.../merge_requests/{iid}` → `source_branch`, title, type, `user_notes_count`. No ticket key in title → drop that segment, don't leave a literal placeholder |
+| **Sanity check** | Compare the MR's project against the workspace's own remote; compare `author`/`assignees` against the current user. Flag a mismatch, don't block on it — let the user's next reply confirm or correct course |
+| Branch | Compare to the current branch from Step 1; check the dirty-tree status before switching |
+| Fetch comments | `glab_api` → `.../discussions` with `output: ndjson`; drop `system: true`; **reconcile vs `user_notes_count`**. Zero comments → stop, ask, don't produce an empty triage report |
+| Triage | Classify each, verify reviewer-named APIs in `node_modules`, check cross-comment interactions, check against conventions relevant to the file actually edited, cross-check against this skill's own `review-feedback-patterns.md` if it exists — no edits. Referenced file/line no longer exists → flag explicitly, don't skip silently |
+| **Report** | **Full triage report (including general MR-level comments), wait for go-ahead — hard stop** |
+| Fix | One at a time; lint via `lint:{project}` script → `nx lint {project}` → generic `lint`, narrowest scope that covers the change. Self-review pass at the end: discover review resources by reading their **descriptions**, never by matching filenames; offer what you found rather than silently applying it; always run the generic diff scan regardless. Disclosed in the Step 8 summary, with the offer folded into that same gate |
 | **Summary** | **Summary + commit message, wait for approval — hard stop** |
 | Commit | Run staged formatter first, stage by name, commit — terminal git, not MCP tools |
-| **Pre-push** | **If the hook runs builds, present (a)/(b)/(c) and wait — hard stop. Never pick `--no-verify` yourself; disclose it in the MR if the user does** |
+| **Pre-push** | **If the hook runs builds, present (a)/(b)/(c) and wait — hard stop. Never pick `--no-verify` yourself** |
 | Push | `git push`, or `git push --no-verify` per the user's answer. Never force-push without asking |
-| **Replies** | **Preview replies, wait for approval — hard stop.** Then reply inline per thread, then resolve |
+| **Replies** | **Preview replies, wait for approval — hard stop.** Then reply inline per thread (Already-addressed items too), resolve every thread replied to |
 | Log time | Use the duration from Step 8 — don't ask again. Resolve `cloudId` via `getAccessibleAtlassianResources`, `addWorklogToJiraIssue` |
-| **Lessons** | **Only patterns that would apply again — skip one-offs and anything lint catches. `×N` count, promote to top at ×3. Preview and wait — hard stop. Often correctly skipped entirely** |
+| **Lessons** | **Only patterns that would apply again — skip one-offs and anything lint catches. Eligible items include Question/Disagree that became real fixes after the user's Step 6 answer. `×N` count, promote to top at ×3. Preview and wait — hard stop. Often correctly skipped entirely — say so explicitly rather than leaving it unmentioned** |
 | **Stop** | **Do not merge, approve, delete branch, or set Done. The reviewer decides.** |
 | Never (process) | Commit or push without approval, post replies without previewing, skip the report, edit before approval, guess answers to reviewer questions, reply as a general MR comment instead of inline, resolve silently, force-push without asking, merge or approve the MR, escalate to `--no-verify` when the user's chosen option fails |
 | Never (tooling) | Use `glab_mr_view`/`glab_mr_note` (always fail — use `glab_api`), omit `ndjson` on list endpoints, triage only the URL's `note_id`, use git MCP tools (`git_add`/`git_commit`) when hooks exist — use terminal commands, or dispute a reviewer-named API without searching the dependency tree |
 | Never (hardcode) | Host, project path, package manager, lint command, branch name, commit format, Jira site, ticket prefix — all derived in Steps 0–2 |
-| Never (assume tooling) | Abort because `get_project_profile` or the Atlassian tools are missing. Only `git` and the `glab` MCP server are truly required; everything else has a fallback |
+| Never (external dependency) | Call a tool or power that isn't installed. This skill relies only on `git` and the `glab` MCP server — no other Kiro power is ever required, and the Atlassian step (11) is purely optional |
+| Never (silent assumptions) | Proceed on a malformed URL, an MR from a different project, an unassigned/not-yours MR, or a zero-comment MR without surfacing it first — see "Mistakes a user can hand you" |
+| Never (brittle discovery) | Decide what a project's review resources are from a hardcoded filename list. Read each candidate's own `description` and judge from what it says it does — projects name these anything, and a fixed list misses whatever you didn't predict |
 
 
 

@@ -37,6 +37,23 @@ inline and resolve each thread, log time if the user gives a duration,
 optionally capture a recurring lesson as a steering-file entry, and stop —
 no merging, no approving, no ticket transitions.
 
+Along the way it checks the things a pasted URL can get wrong — a malformed
+or non-GitLab link, an MR from a different project than the open workspace,
+an MR that isn't yours, one already merged or closed, one with no comments
+at all — and surfaces the mismatch before it costs a wrong branch checkout
+or a reply on the wrong MR.
+
+## Finding your review conventions
+
+The self-review pass before commit doesn't look for a fixed set of filenames.
+It searches wherever the project keeps agent-facing instructions — steering
+files, skills, repo-root rule files, contributor docs — and decides what's
+relevant by reading **what each one says it does** in its own description,
+so a checklist called `pre-flight.md` or `merge-readiness.md` is found just
+as reliably as one called `code-review.md`. When it finds something, it names
+it and offers to run it rather than applying it silently, so you can see what
+was checked and skip it when it doesn't apply.
+
 ## GitLab only
 
 The resolve/reply API this workflow depends on (`PUT .../discussions/{id}` to
@@ -51,12 +68,11 @@ This power bundles no MCP server. It expects the user's own `glab` MCP server
 [MCP configuration docs](https://kiro.dev/docs/mcp/configuration/) for adding
 one. `git` is a hard requirement; everything else degrades gracefully.
 
-If [`jira-ticket-workflow`](https://github.com/yf-tools/jira-ticket-workflow) is also installed, this
-skill calls its `get_project_profile` tool for richer detection (multi-
-ecosystem package managers, task runners, linters, review-checklist
-location). If it isn't installed, Step 1 derives the same values directly
-from lockfiles, `package.json`, git hooks, and `git log` — never a hard
-dependency in either direction.
+This power has no dependency on any other Kiro power. Step 1 derives all
+project conventions (package manager, lint command, framework, monorepo
+tool, git hooks, commit convention) directly from the repo itself —
+lockfiles, `package.json`, git hooks, and `git log` — so it works standalone
+whether or not anything else is installed.
 
 ## Known gaps
 

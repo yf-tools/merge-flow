@@ -7,10 +7,9 @@ configured.
 
 Its distinguishing feature is that **nothing project-specific is hardcoded.**
 The workflow derives the package manager, lint command, framework, monorepo
-tool and commit convention from the repo itself — from the [`jira-ticket-workflow`](https://github.com/yf-tools/jira-ticket-workflow)
-power's `project-scanner` if it's installed, or by reading the repo's own
-config files directly if it isn't. Neither path is required for the other:
-this power runs standalone.
+tool and commit convention directly from the repo's own config files —
+lockfiles, `package.json`, git hooks, `git log`. This power has no
+dependency on any other Kiro power and runs fully standalone.
 
 **GitLab only.** The review-thread resolve/reply API is GitLab-specific, and
 this skill stops and tells you rather than improvising equivalent behavior
@@ -22,6 +21,20 @@ is what this was built and tested against, but the same package format is
 also read natively by VS Code / GitHub Copilot. Support in other clients
 isn't verified here — check what a given client actually supports before
 assuming it'll load.
+
+## Safety behaviour
+
+What it will and won't do on its own:
+
+- Validates the pasted URL is actually a GitLab MR link before calling anything — malformed or non-GitLab URLs are caught immediately, not after a confusing API error
+- Checks the MR's project against your workspace remote — different project → stops and asks before checking out a branch that doesn't belong here
+- Flags when the MR is authored by or assigned to someone else — might be a typo (`!490` vs `!409`), might be intentional; surfaced either way
+- Stops on a merged/closed MR, a zero-comment MR, or a dirty tree — never proceeds silently into a state that can't be productive
+- Never edits code before showing you the triage report and getting a go-ahead
+- Never commits, pushes, replies, resolves, merges, or transitions without explicit approval (6 hard stops)
+- Never picks `--no-verify` itself; when a pre-push hook runs a full build it hands you the choice and discloses it in the MR if you skip
+- Discovers review conventions by reading each candidate file's **description** rather than matching on filenames — a checklist called `pre-flight.md` or `merge-readiness.md` is found as reliably as one called `code-review.md`, and it's offered to you before being applied
+- Reports failures as failures — a failed push, a failed resolve, or a tool that isn't available is surfaced clearly, never silently swallowed
 
 ## Install
 
@@ -53,9 +66,9 @@ install — see Requirements below for what to configure yourself.
   `mcp.json` — this power doesn't bundle one. See
   [Adding MCP servers](https://kiro.dev/docs/powers/create/#adding-mcp-servers).
 - `git` on PATH.
-- Optional: the [`jira-ticket-workflow`](https://github.com/yf-tools/jira-ticket-workflow) power, for
-  richer project detection and Jira time logging. Falls back gracefully if
-  it's not installed.
+- Optional: an Atlassian/Jira MCP server, only if you want Step 11's time
+  logging. Every other step works without it — this power has no dependency
+  on any other Kiro power.
 
 ## Usage
 
