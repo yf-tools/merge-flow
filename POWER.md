@@ -1,7 +1,7 @@
 ---
 name: "gitlab-mr-review"
 displayName: "GitLab MR Review"
-description: "ACTIVATE whenever the user pastes a GitLab merge request URL (including a bare '#note_' link) or says things like 'handle MR comments', 'address review feedback', 'fix reviewer comments', or 'resolve the MR threads'. Works through an existing MR's review comments end to end: fetch every thread, triage, fix, self-review, commit, push, reply inline, resolve, log time."
+description: "ACTIVATE whenever the user pastes a full GitLab merge request URL (optionally with a '#note_' fragment) or says things like 'handle MR comments', 'address review feedback', 'fix reviewer comments', or 'resolve the MR threads'. Works through an existing MR's review comments end to end: fetch every thread, triage, fix, self-review, commit, push, reply inline, resolve, log time."
 keywords:
   [
     "gitlab",
@@ -26,7 +26,7 @@ work through them without missing one, without guessing at project
 conventions, and without merging or transitioning tickets on your own
 authority.
 
-It has 13 steps (0–13) with 6 hard stops — see [skills/mr-comments/SKILL.md](skills/mr-comments/SKILL.md)
+It has 14 numbered steps (0–13) and five approval gates after investigation: triage, final staged summary, pre-push choice when needed, reply preview, and lesson preview only when the user opts in. See [skills/mr-comments/SKILL.md](skills/mr-comments/SKILL.md)
 for the full workflow. In short: parse the MR URL, profile the project,
 fetch the MR and **every** review comment (never a partial fetch), triage
 each one without editing anything yet, present the triage report and wait,

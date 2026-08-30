@@ -153,9 +153,24 @@ function testDeclaredFilesExist() {
   );
 }
 
+function testWorkflowPolicyContracts() {
+  const skill = readFileSync(join(ROOT, "skills", "mr-comments", "SKILL.md"), "utf8");
+  for (const phrase of [
+    "git merge --ff-only",
+    "Validation evidence",
+    "reconcile ticket identity",
+    "Never write or disclose it",
+    "Optional Follow-Up: Capture Recurring Lessons",
+  ]) truthy(`workflow: contains ${phrase}`, skill.includes(phrase));
+  truthy("workflow: no legacy no-verify disclosure", !skill.includes("Pushed with `--no-verify`"));
+  truthy("workflow: no automatic no-verify MR note", !skill.includes("pre-push lint/build skipped, relying on CI"));
+  truthy("workflow: lessons file provenance is explicit", skill.includes("source: MR !123 note 456"));
+}
+
 // ---------- Runner ----------
 
 const suites = [
+  ["workflow policy contracts", testWorkflowPolicyContracts],
   ["plugin.json manifest", testPluginManifest],
   ["skill frontmatter", testSkillFrontmatter],
   ["declared files exist", testDeclaredFilesExist],

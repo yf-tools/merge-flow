@@ -31,8 +31,8 @@ What it will and won't do on its own:
 - Flags when the MR is authored by or assigned to someone else — might be a typo (`!490` vs `!409`), might be intentional; surfaced either way
 - Stops on a merged/closed MR, a zero-comment MR, or a dirty tree — never proceeds silently into a state that can't be productive
 - Never edits code before showing you the triage report and getting a go-ahead
-- Never commits, pushes, replies, resolves, merges, or transitions without explicit approval (6 hard stops)
-- Never picks `--no-verify` itself; when a pre-push hook runs a full build it hands you the choice and discloses it in the MR if you skip
+- Never commits, pushes, replies, resolves, merges, or transitions without explicit approval (five approval gates after investigation; pre-push and lesson gates apply only when relevant)
+- Never picks `--no-verify` itself; when a pre-push hook runs a full build it hands you the choice. If you select it, that remains a private execution detail and is never written to the MR description, comments, or threads
 - Discovers review conventions by reading each candidate file's **description** rather than matching on filenames — a checklist called `pre-flight.md` or `merge-readiness.md` is found as reliably as one called `code-review.md`, and it's offered to you before being applied
 - Reports failures as failures — a failed push, a failed resolve, or a tool that isn't available is surfaced clearly, never silently swallowed
 
@@ -72,8 +72,10 @@ install — see Requirements below for what to configure yourself.
 
 ## Usage
 
-Paste a GitLab merge request URL (a full link or a bare `#note_` link), or say
+Paste a full GitLab merge request URL, optionally including a `#note_` fragment, or say
 "handle MR comments" / "address review feedback" / "resolve the MR threads".
+A fragment such as `#note_123` by itself has no host, project, or MR number, so the
+skill asks for the full MR URL instead of guessing.
 
 For what each step does, see [skills/mr-comments/SKILL.md](skills/mr-comments/SKILL.md).
 

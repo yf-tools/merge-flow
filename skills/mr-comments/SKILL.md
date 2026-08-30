@@ -1,6 +1,6 @@
 ---
 name: mr-comments
-description: End-to-end workflow for GitLab merge request review comments - fetch every thread, triage each one, fix, commit, push, reply inline, resolve the threads, and log time to Jira. Use when the user pastes a GitLab MR or note URL (including a bare "#note_" link), or says things like "handle MR comments", "address review feedback", "fix reviewer comments", "go through the comments on this MR", "reply to the review comments", or "resolve the MR threads".
+description: End-to-end workflow for GitLab merge request review comments - fetch every thread, triage each one, fix, commit, push, reply inline, resolve the threads, and log time to Jira. Use when the user pastes a full GitLab MR URL (optionally with a #note_ fragment), or says things like "handle MR comments", "address review feedback", "fix reviewer comments", "go through the comments on this MR", "reply to the review comments", or "resolve the MR threads".
 ---
 
 # MR Workflow — Addressing Review Comments
@@ -16,9 +16,9 @@ Nothing in this workflow is project-specific. Host, project path, package manage
 3. **Show the final summary and stop.** No commit, no push, before explicit approval. (Step 8)
 4. **Let the user choose how to handle a heavy pre-push hook.** Never pick `--no-verify` yourself. (Step 9)
 5. **Preview thread replies and stop.** No posting or resolving before approval. (Step 10)
-6. **Preview any steering-file change and stop.** It shapes every future request in the repo. (Step 12)
+6. **If recurring lesson capture is offered and accepted, preview its local steering-file change and stop.** It shapes future requests in this clone. (Step 12)
 
-Rules 2–6 are hard stops even when the change looks trivial. This list is exhaustive — there are no other gates.
+Rules 2–6 are hard stops when applicable. Step 12 is optional and adds a gate only after the user opts in.
 
 ## Mistakes a user can hand you — check for these before acting
 
@@ -32,7 +32,7 @@ This workflow reads a URL and a local repo, then acts on both. Neither is guaran
 - **The local branch has unrelated in-progress work** (Step 1/3, already covered by the dirty-tree check) — but also watch for a branch that's *clean* yet clearly not related to this MR (e.g. `git log` shows commits for a different ticket entirely with no relation to `source_branch`). If the checkout would silently discard the user's mental model of "what I'm currently working on," say what branch you're switching from and to, even when the tree is clean.
 - **A reviewer comment references a file or line that no longer exists** (Step 5) — **flag it, don't block.** Say the referenced code is gone (renamed, deleted, or moved) as an item in the Step 6 report, and let the user decide whether it was already handled elsewhere or needs a fresh look at the new location.
 
-Most of these fold into the six existing hard stops — the host guard, Step 2's merged/closed check, Step 6's report — rather than adding new ones. The two that genuinely need their own pause (malformed URL, wrong project) are the two where continuing could touch the wrong code before you've said anything at all; the rest are lower-risk and just need to be surfaced as part of what you're already reporting.
+Most of these fold into the existing approval gates — the host guard, Step 2's merged/closed check, Step 6's report — rather than adding new ones. The two that genuinely need their own pause (malformed URL, wrong project) are the two where continuing could touch the wrong code before you've said anything at all; the rest are lower-risk and just need to be surfaced as part of what you're already reporting.
 
 ## Formatting every report to the user
 
@@ -134,6 +134,8 @@ Parse from the title:
 - **Ticket key** — `[A-Z]+-\d+`. The project prefix is whatever the MR uses; never assume a specific one. **If the title has no match at all** (no ticket-shaped prefix), don't invent one and don't leave `{TICKET-KEY}` as a literal placeholder in the eventual commit message. Fall back to omitting the ticket segment from the commit message template in Step 8, and mention once that no ticket key was found in the title.
 - **Commit type** — the word before the parentheses (`fix`, `feat`, `chore`, `refactor`, …). Reuse this exact type in Step 9 rather than defaulting to `fix`.
 
+**Ticket identity for optional Jira logging** — collect all ticket-shaped evidence now: keys in the MR title, `source_branch`, Jira browse links in the MR description, and linked issues if exposed. Do not choose one yet when they disagree; Step 11 reconciles them before writing a worklog.
+
 If `state` is `merged` or `closed`, tell the user and ask whether to proceed (e.g. as a follow-up fix on a new branch).
 
 **Sanity-check the MR itself before going further — this is where a wrong paste surfaces:**
@@ -143,26 +145,28 @@ If `state` is `merged` or `closed`, tell the user and ask whether to proceed (e.
 
 ## Step 3 — Check Out the Right Branch (before touching any code)
 
-**Check the dirty-tree status from Step 1 first — it gates every path below, not just the switch.**
-A dirty tree breaks a checkout *and* a pull: `git pull` over uncommitted changes
-either aborts on conflict or strands you mid-merge. If dirty, stop and ask whether
-to stash, commit, or discard. Never move over uncommitted work silently.
+**Check the dirty-tree status from Step 1 first — it gates every path below.** If dirty, stop and offer only: stay on the current branch, or create a named stash with the exact recovery command (`git stash pop`). Do not propose committing unrelated changes onto this MR branch, and never offer discard as a convenience path; if the user explicitly requests deletion, show per-file diffs and reconfirm first.
 
 With a clean tree, compare the current branch from Step 1 against `source_branch` (Step 2).
 
-**Already on it** — `git pull` to catch up, then proceed.
+**Already on it** — `git fetch origin {source_branch}` then `git merge --ff-only origin/{source_branch}`.
 
-**On a different branch** — switch:
+**On a different branch** — switch without creating an incidental merge commit:
 
 ```bash
 git fetch origin {source_branch}
 git checkout {source_branch}
-git pull origin {source_branch}
+git merge --ff-only origin/{source_branch}
 ```
 
-**Not present locally** — `git checkout -b {source_branch} origin/{source_branch}`
+**Not present locally** — fetch first, then create the local tracking branch from the refreshed remote ref:
 
-State which branch you ended on before continuing.
+```bash
+git fetch origin {source_branch}
+git checkout -b {source_branch} origin/{source_branch}
+```
+
+If fast-forward fails, stop and show ahead/behind state. Never start a merge or rebase implicitly. State which branch you ended on before continuing.
 
 ## Step 4 — Fetch ALL the Review Comments
 
@@ -293,9 +297,21 @@ For each approved item:
 
 Keep fixes traceable per comment — don't merge unrelated changes to the same file into one edit.
 
+### Definitive validation and staging (before self-review and approval)
+
+The final approval must cover the exact bytes that will be committed. Before the self-review pass:
+
+1. Run and record the narrowest relevant **diagnostics/type check, targeted tests, lint, and smoke test**. Run a build when required by the change; otherwise record `deferred to CI`. A skipped check must include the reason.
+2. Stage only the approved MR-review files by name — never `git add .`.
+3. Run the pre-commit staged formatter discovered in Step 1, then re-stage anything it changed.
+4. If formatting changed behavior-relevant bytes, rerun every affected validation check.
+5. Use `git diff --cached` as the definitive input to the self-review and Step 8 summary. Also show `git status --short` so excluded work is visible.
+
+Any later mutation — including a project checklist fix — loops back through this entire phase: validate affected behavior, stage by name, format, re-stage, inspect `git diff --cached`, then re-present Step 8 and wait again. An earlier approval never authorizes changed bytes.
+
 ### Self-review pass (after all fixes, before presenting the summary)
 
-Before Step 8, re-read the actual diff (`git diff` for unstaged or `git diff --cached` for staged) — not from memory of what you changed, but from the real output — and check it against whatever review conventions this project actually has.
+Before Step 8, re-read the definitive staged diff (`git diff --cached`) — not from memory of what you changed — and check it against whatever review conventions this project actually has.
 
 #### 1. Discover review resources by what they say they do, not by their filename
 
@@ -333,7 +349,7 @@ Whether or not a project-specific resource was found or run, do this much yourse
 - Confirm every change traces to a stated reviewer comment (no scope creep).
 - Scan the diff for accidentally-added secrets (API keys, tokens, passwords in string literals).
 
-Anything this catches, fix silently — same as a lint fix, no separate approval round.
+Anything this catches must be fixed, then sent back through definitive validation, staging, formatting and the Step 8 approval gate. Do not silently change an already-reviewed staged set.
 
 #### 4. Report what happened, in the Step 8 summary
 
@@ -345,7 +361,7 @@ Never let this pass stay invisible. In the Step 8 summary, state:
 
 ## Step 8 — Present the Final Summary (BLOCKING)
 
-Once all approved fixes are in and lint passes, present this shape — one line per fixed comment, not a paragraph, and every open item called out separately so nothing needing the user's attention gets buried:
+Once all approved fixes are validated, formatted, staged, and self-reviewed, present this shape — one line per fixed comment, not a paragraph, and every open item called out separately so nothing needing the user's attention gets buried:
 
 ```
 ### Summary — ready to commit
@@ -354,9 +370,12 @@ Once all approved fixes are in and lint passes, present this shape — one line 
 - `{file}:{line}` — {what changed, one line}
 - `{file}:{line}` — {what changed, one line}
 
-**Files modified**
+**Files staged**
 - `{file}` ({+X / -Y})
 - `{file}` ({+X / -Y})
+
+**Deliberately unstaged**
+- `{file}` — {why excluded}
 
 **Still needs your input**
 - `{file}:{line}` — {question or disagreement, one line}
@@ -368,6 +387,13 @@ Once all approved fixes are in and lint passes, present this shape — one line 
 - Generic diff scan: {clean / caught {what}, fixed}
 - {Found `{path}` — its description says {what it's for}. Run it against these changes before committing? / Looked in {where you looked} — nothing describing itself as a review or pre-push check. Is there one I should know about for next time?}
 
+**Validation evidence**
+- Diagnostics/type check: {tool/command + result / unavailable + why}
+- Targeted tests: {command + result / not applicable + why}
+- Lint: {command + result}
+- Smoke test: {result / not applicable}
+- Build: {result / deferred to CI}
+
 ---
 
 **Commit message:** `{type}({TICKET-KEY}): address MR review comments`
@@ -378,7 +404,7 @@ Ready to commit and push? (yes / let me review first / adjust message)
 
 Omit any section that's empty (no skipped items → drop that heading entirely, don't write "none") — **except Self-review, which always appears**, since it's the only place that pass surfaces to the user at all.
 
-**If the Self-review section offered a discovered resource, treat the user's answer to it as part of this gate.** "Yes, run it" means run it, report what it found, and re-present this summary before committing — not commit first and check afterward. A plain "yes" to the commit question with no mention of the checklist means they're fine proceeding without it; don't re-ask.
+**If the Self-review section offered a discovered resource, treat the user's answer to it as part of this gate.** "Yes, run it" means run it against `git diff --cached`; if it changes anything, loop through definitive validation, stage by name, run the formatter, re-stage, show the new cached diff/evidence, and re-present this summary before committing. A plain "yes" to the commit question with no mention of the checklist means they're fine proceeding without it; don't re-ask.
 
 For the commit message, match the convention you saw in `git log` (Step 1), with the type and ticket key from Step 2. If the log history is inconsistent or you can't confidently read a convention from it, fall through in this order before asking:
 
@@ -392,17 +418,15 @@ If the user says "let me review first", wait. Re-present the summary after any f
 
 ## Step 9 — Commit and Push (only after approval)
 
-### 1. Read the hooks before running anything
+### 1. Re-check the approved staged set
 
-Neither hook should be a surprise — you already read both in Step 1:
+Hooks were already read in Step 1, and the staged formatter already ran before Step 8. Confirm `git diff --cached` still matches the approved staged diff and `git status --short` contains no newly relevant unstaged file. If anything changed, return to definitive validation/staging and the Step 8 gate.
 
-- The pre-commit hook typically runs a staged-file formatter. Run that command yourself first (whatever script `.husky/pre-commit` invokes) so the hook becomes a fast no-op.
-- The pre-push hook is often much heavier — a full lint-and-build `check` across every app. **Don't start it. Commit first, then present the choice in section 3 and wait.**
+The pre-push hook may be much heavier — a full lint-and-build `check` across every app. **Don't start it. Commit first, then present the choice in section 3 and wait.**
 
-### 2. Stage and commit
+### 2. Commit the already-approved staged set
 
-1. `git status` — stage specific files **by name**. Never `git add .`; the tree may hold unrelated work.
-2. Commit with the type and format established in Step 8.
+Do not stage or format here; doing either after approval changes what the user reviewed. Commit with the type and format established in Step 8.
 
 Run both as terminal commands — see the note at the end of this step.
 
@@ -428,7 +452,7 @@ Committed. Now the push — this repo's pre-push hook runs `{command}`, which li
 
 Then wait for the answer.
 
-**Never choose (c) yourself.** A hook exists because someone wanted it enforced; a tool shouldn't bypass it unilaterally. But if the user picks (c), that's a legitimate choice — carry it out in section 4 without arguing.
+**Never choose (c) yourself.** A hook exists because someone wanted it enforced; a tool shouldn't bypass it unilaterally. But if the user picks (c), that's a legitimate private execution choice. **Never write or disclose it** in an MR comment, general note, thread reply, MR description, Jira comment, or any other remote text. Step 10 previews only reviewer-thread replies; it never adds a disclosure row.
 
 **Mention the timeout up front.** On a monorepo building several apps, (a) will very likely be killed mid-hook — verified on a real repo where the mobile production build alone ran past ten minutes. Saying so makes (b) and (c) informed choices rather than fallbacks.
 
@@ -443,7 +467,7 @@ git push              # if user chose (a), or the hook is light enough that no c
 git push --no-verify  # only if the user explicitly chose (c)
 ```
 
-If the remote diverged (someone else pushed to the MR branch), pull or rebase first. **Never force-push without explicit confirmation.**
+If the remote diverged (someone else pushed to the MR branch), fetch and show ahead/behind state, then stop for an explicit reconciliation decision. A merge or rebase can change the just-approved commit and therefore requires renewed validation and Step 8 review. **Never merge, rebase, or force-push implicitly.**
 
 ### Use terminal commands, not git MCP tools
 
@@ -519,10 +543,18 @@ Never leave a fixed comment unresolved, and never resolve without a reply explai
 
 Use the duration gathered in Step 8 — **don't ask again.**
 
-If the user gave a duration, resolve the Jira site rather than assuming one:
+Before writing any worklog, reconcile ticket identity from Step 2:
 
-1. `getAccessibleAtlassianResources` → `cloudId`. With several sites, match against the ticket prefix or ask.
-2. `addWorklogToJiraIssue` with that `cloudId`, `issueIdOrKey` = the ticket key from Step 2, and `timeSpent`.
+- Exactly one key and title/branch/description agree → use it, preserving any Jira browse-link hostname as site evidence.
+- Several keys, sources disagree, or Jira links point at different hosts → show them and ask which ticket/site receives the time.
+- No unambiguous key → skip logging rather than guessing.
+
+If the user gave a duration and identity is unambiguous, resolve and verify the Jira site:
+
+1. A matching Jira browse URL exists → use its hostname as the `cloudId` candidate.
+2. Otherwise call `getAccessibleAtlassianResources`. If several sites are accessible, do **not** infer ownership from the ticket prefix alone; ask which site, or call `getJiraIssue` on the candidate and show its summary for confirmation.
+3. Verify the chosen `cloudId` + key resolves to the expected issue before writing.
+4. `addWorklogToJiraIssue` with that verified `cloudId`, reconciled `issueIdOrKey`, and `timeSpent`.
 
 `timeSpent` takes the same format as an estimate: `30m`, `2h`, `1d`, or a
 combination like `2h 30m`. A range (`1-2h`) is invalid — ask for a single value.
@@ -531,12 +563,9 @@ This step depends on the Atlassian MCP server. If those tools aren't available, 
 
 If the user declined in Step 8, skip without asking again.
 
-## Step 12 — Capture Recurring Lessons (BLOCKING, and often skipped)
+## Step 12 — Optional Follow-Up: Capture Recurring Lessons
 
-The point of this step is that the *next* feature avoids the mistake this MR caught.
-It runs here, not in a hook, because the reasoning behind each fix is still in
-context — a hook firing after the push would only see the diff and would have to
-guess why the change was made.
+This is **not a default blocking gate**. After replies, resolutions and time logging are complete, say in one line whether any reusable pattern was noticed and offer lesson capture as an optional follow-up. Run the file mutation only when the user opts in; a user who says "done" or does not engage is finished with the workflow.
 
 ### What earns an entry
 
@@ -601,8 +630,7 @@ change, which announces the file you're trying to keep out:
 echo ".kiro/steering/review-feedback-patterns.md" >> .git/info/exclude
 ```
 
-`.git/info/exclude` is per-clone and never committed. Do this once, on the run that
-first creates the file, and say you've done it.
+Add the path to `.git/info/exclude` only if it is not already present. `.git/info/exclude` is per-clone and never committed. Because this file has no git history, each rule must store compact, append-only provenance, for example `[sources: MR !123 note 456; MR !140 note 891]`. Say when the local exclusion is first created.
 
 **Keep it workspace-scoped — don't move it to a global steering directory.** The rules
 are repo-specific: an SCSS mixin convention from this project is wrong in the next one,
@@ -617,7 +645,7 @@ file as its own deliberate change — never bundled into an unrelated bugfix MR.
 
 Before adding anything, search the file for a rule already covering it.
 
-- **Found** → increment the count. Never add a second bullet for the same rule.
+- **Found** → increment the count and append the new MR/note reference to the rule's `[sources: ...]` list if it is not already present. Never replace or drop earlier sources, and never add a second bullet for the same rule.
 - **Count reaches 3** → move it under `## Repeat offenders` at the top of the file.
 
 The promotion is the part that does the work. A count is decoration; **position is
@@ -625,8 +653,7 @@ what changes behavior**, because rules earlier in a steering file carry more wei
 than ones buried at the bottom. A rule being violated repeatedly is evidence it's
 sitting too low to be read.
 
-Don't log MR numbers or dates. The file is in git — provenance is already recorded,
-and every increment has a commit explaining it.
+Store the append-only `[sources: ...]` list beside each rule and deduplicate identical MR/note pairs. This file is intentionally git-excluded, so git cannot provide provenance and no commit records increments.
 
 ### Present and stop
 
@@ -717,13 +744,13 @@ This affects `/discussions`, `/notes`, `/projects`, and every other collection. 
 | Triage | Classify each, verify reviewer-named APIs in `node_modules`, check cross-comment interactions, check against conventions relevant to the file actually edited, cross-check against this skill's own `review-feedback-patterns.md` if it exists — no edits. Referenced file/line no longer exists → flag explicitly, don't skip silently |
 | **Report** | **Full triage report (including general MR-level comments), wait for go-ahead — hard stop** |
 | Fix | One at a time; lint via `lint:{project}` script → `nx lint {project}` → generic `lint`, narrowest scope that covers the change. Self-review pass at the end: discover review resources by reading their **descriptions**, never by matching filenames; offer what you found rather than silently applying it; always run the generic diff scan regardless. Disclosed in the Step 8 summary, with the offer folded into that same gate |
-| **Summary** | **Summary + commit message, wait for approval — hard stop** |
-| Commit | Run staged formatter first, stage by name, commit — terminal git, not MCP tools |
+| **Summary** | **Validate, stage by name, run formatter, re-stage, self-review `git diff --cached`, then show summary + evidence + commit message and wait — hard stop. Any later mutation loops back through this gate** |
+| Commit | Re-check that `git diff --cached` matches the approved set, then commit — no staging or formatting after approval; terminal git, not MCP tools |
 | **Pre-push** | **If the hook runs builds, present (a)/(b)/(c) and wait — hard stop. Never pick `--no-verify` yourself** |
-| Push | `git push`, or `git push --no-verify` per the user's answer. Never force-push without asking |
+| Push | `git push`, or `git push --no-verify` per the user's answer. Divergence → fetch, show ahead/behind, stop for an explicit reconciliation choice and renewed review; never merge/rebase/force implicitly |
 | **Replies** | **Preview replies, wait for approval — hard stop.** Then reply inline per thread (Already-addressed items too), resolve every thread replied to |
-| Log time | Use the duration from Step 8 — don't ask again. Resolve `cloudId` via `getAccessibleAtlassianResources`, `addWorklogToJiraIssue` |
-| **Lessons** | **Only patterns that would apply again — skip one-offs and anything lint catches. Eligible items include Question/Disagree that became real fixes after the user's Step 6 answer. `×N` count, promote to top at ×3. Preview and wait — hard stop. Often correctly skipped entirely — say so explicitly rather than leaving it unmentioned** |
+| Log time | Use the duration from Step 8 — don't ask again. Reconcile key + Jira hostname evidence, verify the issue on the selected `cloudId`, then `addWorklogToJiraIssue` |
+| **Lessons** | **Optional follow-up only. Patterns that would apply again; skip one-offs and lint-enforced items. Eligible items include Question/Disagree that became real fixes. `×N` count, append/deduplicate `[sources: MR !N note M; ...]`, promote to top at ×3. If accepted, preview and wait — hard stop** |
 | **Stop** | **Do not merge, approve, delete branch, or set Done. The reviewer decides.** |
 | Never (process) | Commit or push without approval, post replies without previewing, skip the report, edit before approval, guess answers to reviewer questions, reply as a general MR comment instead of inline, resolve silently, force-push without asking, merge or approve the MR, escalate to `--no-verify` when the user's chosen option fails |
 | Never (tooling) | Use `glab_mr_view`/`glab_mr_note` (always fail — use `glab_api`), omit `ndjson` on list endpoints, triage only the URL's `note_id`, use git MCP tools (`git_add`/`git_commit`) when hooks exist — use terminal commands, or dispute a reviewer-named API without searching the dependency tree |
