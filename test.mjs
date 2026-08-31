@@ -164,7 +164,7 @@ function testWorkflowPolicyContracts() {
   ]) truthy(`workflow: contains ${phrase}`, skill.includes(phrase));
   truthy("workflow: no legacy no-verify disclosure", !skill.includes("Pushed with `--no-verify`"));
   truthy("workflow: no automatic no-verify MR note", !skill.includes("pre-push lint/build skipped, relying on CI"));
-  truthy("workflow: lessons file provenance is explicit", skill.includes("source: MR !123 note 456"));
+  truthy("workflow: lessons file provenance is explicit", skill.includes("sources: MR !123 note 456"));
 }
 
 // ---------- Runner ----------
