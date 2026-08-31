@@ -155,16 +155,52 @@ function testDeclaredFilesExist() {
 
 function testWorkflowPolicyContracts() {
   const skill = readFileSync(join(ROOT, "skills", "mr-comments", "SKILL.md"), "utf8");
+  const power = readFileSync(join(ROOT, "POWER.md"), "utf8");
+  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+
   for (const phrase of [
     "git merge --ff-only",
-    "Validation evidence",
-    "reconcile ticket identity",
+    "Definitive validation and staging",
+    "loops back through this entire phase",
+    "git diff --cached",
+    "Do not stage or format here",
+    "fetch and show ahead/behind state",
+    "preserving any Jira browse-link hostname",
+    "Verify the chosen `cloudId` + key",
     "Never write or disclose it",
     "Optional Follow-Up: Capture Recurring Lessons",
+    "append-only provenance",
+    "Never replace or drop earlier sources",
   ]) truthy(`workflow: contains ${phrase}`, skill.includes(phrase));
-  truthy("workflow: no legacy no-verify disclosure", !skill.includes("Pushed with `--no-verify`"));
-  truthy("workflow: no automatic no-verify MR note", !skill.includes("pre-push lint/build skipped, relying on CI"));
-  truthy("workflow: lessons file provenance is explicit", skill.includes("sources: MR !123 note 456"));
+
+  for (const [label, text, forbidden] of [
+    ["workflow", skill, "Pushed with `--no-verify`"],
+    ["workflow", skill, "pre-push lint/build skipped, relying on CI"],
+    ["workflow", skill, "pull or rebase first"],
+    ["workflow", skill, "keeps this workflow at six gates"],
+    ["power", power, "including a bare '#note_' link"],
+  ]) truthy(`${label}: excludes stale policy ${forbidden}`, !text.includes(forbidden));
+
+  truthy("power: activation requires a full MR URL", power.includes("full GitLab merge request URL"));
+  truthy("README: usage requires a full MR URL", readme.includes("Paste a full GitLab merge request URL"));
+  truthy("README: no-verify stays private", readme.includes("private execution detail"));
+
+  const validation = skill.indexOf("### Definitive validation and staging");
+  const selfReview = skill.indexOf("### Self-review pass");
+  const approval = skill.indexOf("## Step 8 — Present the Final Summary");
+  const commit = skill.indexOf("## Step 9 — Commit and Push");
+  truthy(
+    "workflow: validate/stage before self-review, approval, and commit",
+    validation >= 0 && validation < selfReview && selfReview < approval && approval < commit
+  );
+
+  const checkoutFetch = skill.indexOf("git fetch origin {source_branch}");
+  const checkoutCreate = skill.indexOf("git checkout -b {source_branch} origin/{source_branch}");
+  truthy("workflow: fetches before creating tracking branch", checkoutFetch >= 0 && checkoutFetch < checkoutCreate);
+
+  const identity = skill.indexOf("Before writing any worklog, reconcile ticket identity");
+  const worklog = skill.indexOf("`addWorklogToJiraIssue` with that verified");
+  truthy("workflow: reconciles and verifies identity before worklog", identity >= 0 && identity < worklog);
 }
 
 // ---------- Runner ----------
