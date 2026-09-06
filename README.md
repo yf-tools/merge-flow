@@ -1,15 +1,16 @@
 # gitlab-mr-review
 
 A Kiro power for working through review comments on an existing GitLab merge
-request: fetch every thread, triage each one, fix, self-review, commit, push,
-reply inline, resolve the threads, and optionally log time to Jira if it's
-configured.
+request: verify the linked Jira ticket, move it into active development when
+approved, fetch every thread, triage and fix each one, validate, commit, push,
+reply inline, resolve the threads, return Jira to review, and optionally log
+time.
 
 Its distinguishing feature is that **nothing project-specific is hardcoded.**
-The workflow derives the package manager, lint command, framework, monorepo
-tool and commit convention directly from the repo's own config files —
-lockfiles, `package.json`, git hooks, `git log`. This power has no
-dependency on any other Kiro power and runs fully standalone.
+The workflow derives package management, validation, framework, monorepo and
+commit conventions from the repo, then derives Jira identity and exact active/
+review status names from the MR and Jira APIs. This power has no dependency on
+another Kiro power and runs standalone.
 
 **GitLab only.** The review-thread resolve/reply API is GitLab-specific, and
 this skill stops and tells you rather than improvising equivalent behavior
@@ -30,8 +31,12 @@ What it will and won't do on its own:
 - Checks the MR's project against your workspace remote — different project → stops and asks before checking out a branch that doesn't belong here
 - Flags when the MR is authored by or assigned to someone else — might be a typo (`!490` vs `!409`), might be intentional; surfaced either way
 - Stops on a merged/closed MR, a zero-comment MR, or a dirty tree — never proceeds silently into a state that can't be productive
+- Reconciles exactly one Jira hostname + key across the MR title, source branch, description, and linked issues before checkout; conflicting keys, multiple Jira hosts, absent identity, or a mismatched issue summary stops for correction
+- Reads the Jira ticket before code work. `To Do`/review states require an explicitly approved move to the project's exact active-development status; blocked, unknown, and terminal statuses stop for a decision
+- Re-reads Jira after a successful push and all approved replies/resolutions; only then returns it to the exact review status approved in the final summary
+- Asks how much time to log **last** — after the push, the replies, the resolutions, and the status change — so you're estimating finished work, not work in progress. Commit approval, Jira approval, and the worklog stay independent
 - Never edits code before showing you the triage report and getting a go-ahead
-- Never commits, pushes, replies, resolves, merges, or transitions without explicit approval (five approval gates after investigation; pre-push and lesson gates apply only when relevant)
+- Never commits, pushes, replies, resolves, merges, or transitions without explicit approval (six possible gates; Jira, pre-push, and lesson gates apply only when relevant)
 - Never picks `--no-verify` itself; when a pre-push hook runs a full build it hands you the choice. If you select it, that remains a private execution detail and is never written to the MR description, comments, or threads
 - Discovers review conventions by reading each candidate file's **description** rather than matching on filenames — a checklist called `pre-flight.md` or `merge-readiness.md` is found as reliably as one called `code-review.md`, and it's offered to you before being applied
 - Reports failures as failures — a failed push, a failed resolve, or a tool that isn't available is surfaced clearly, never silently swallowed
@@ -66,9 +71,11 @@ install — see Requirements below for what to configure yourself.
   `mcp.json` — this power doesn't bundle one. See
   [Adding MCP servers](https://kiro.dev/docs/powers/create/#adding-mcp-servers).
 - `git` on PATH.
-- Optional: an Atlassian/Jira MCP server, only if you want Step 11's time
-  logging. Every other step works without it — this power has no dependency
-  on any other Kiro power.
+- An Atlassian/Jira MCP server is recommended for automatic ticket verification,
+  active-status transition, return-to-review transition, and optional worklog.
+  Without it, the workflow remains stopped until the user manually supplies the
+  exact Jira hostname, key, summary, and current status and confirms any required
+  transition. There is no fail-open synchronization waiver.
 
 ## Usage
 

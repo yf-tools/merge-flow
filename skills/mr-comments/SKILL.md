@@ -1,24 +1,25 @@
 ---
 name: mr-comments
-description: End-to-end workflow for GitLab merge request review comments - fetch every thread, triage each one, fix, commit, push, reply inline, resolve the threads, and log time to Jira. Use when the user pastes a full GitLab MR URL (optionally with a #note_ fragment), or says things like "handle MR comments", "address review feedback", "fix reviewer comments", "go through the comments on this MR", "reply to the review comments", or "resolve the MR threads".
+description: End-to-end workflow for GitLab merge request review comments - verify the linked Jira ticket is actively in progress, fetch every thread, triage each one, fix, commit, push, reply inline, resolve the threads, return Jira to review, and optionally log time. Use when the user pastes a full GitLab MR URL (optionally with a #note_ fragment), or says things like "handle MR comments", "address review feedback", "fix reviewer comments", "go through the comments on this MR", "reply to the review comments", or "resolve the MR threads".
 ---
 
 # MR Workflow — Addressing Review Comments
 
 Triage and fix GitLab merge request review comments **one at a time** — each gets read, verified against the code, fixed, and confirmed before moving to the next.
 
-Nothing in this workflow is project-specific. Host, project path, package manager, lint command, branch name, commit format, and Jira site are all **derived at runtime** (Steps 0–1), directly from the repo — never hardcoded, and never carried over from a previous session. This skill has no dependency on any other Kiro power; re-derive everything every time.
+Nothing in this workflow is project-specific. Host, project path, package manager, lint command, branch name, commit format, Jira site, and Jira workflow statuses are all **derived at runtime** (Steps 0–2.5), directly from the repo and connected services — never hardcoded, and never carried over from a previous session. This skill has no dependency on any other Kiro power; re-derive everything every time.
 
-## The six rules that matter most
+## The seven rules that matter most
 
-1. **Fetch every comment before triaging any of them.** Reconcile your count against `user_notes_count`. A single comment on a freshly-reviewed MR almost always means you under-fetched. (Step 4)
-2. **Show the triage report and stop.** No code edits before the user responds. (Step 6)
-3. **Show the final summary and stop.** No commit, no push, before explicit approval. (Step 8)
-4. **Let the user choose how to handle a heavy pre-push hook.** Never pick `--no-verify` yourself. (Step 9)
-5. **Preview thread replies and stop.** No posting or resolving before approval. (Step 10)
-6. **If recurring lesson capture is offered and accepted, preview its local steering-file change and stop.** It shapes future requests in this clone. (Step 12)
+1. **Resolve and verify the Jira ticket before checkout or code work.** If it is not in an active development state, show the exact proposed transition and wait for approval. (Step 2.5)
+2. **Fetch every comment before triaging any of them.** Reconcile your count against `user_notes_count`. A single comment on a freshly-reviewed MR almost always means you under-fetched. (Step 4)
+3. **Show the triage report and stop.** No code edits before the user responds. (Step 6)
+4. **Show the final summary and stop.** No commit, push, or later Jira review transition before explicit approval. (Step 8)
+5. **Let the user choose how to handle a heavy pre-push hook.** Never pick `--no-verify` yourself. (Step 9)
+6. **Preview thread replies and stop.** No posting or resolving before approval. (Step 10)
+7. **If recurring lesson capture is offered and accepted, preview its local steering-file change and stop.** It shapes future requests in this clone. (Step 12)
 
-Rules 2–6 are hard stops when applicable. Step 12 is optional and adds a gate only after the user opts in.
+Rules 1 and 3–7 are hard stops when applicable. The Jira transition, pre-push, and lesson gates are conditional; none authorizes a different remote mutation.
 
 ## Mistakes a user can hand you — check for these before acting
 
@@ -28,21 +29,46 @@ This workflow reads a URL and a local repo, then acts on both. Neither is guaran
 - **MR belongs to a different project than the one open in this workspace** (Step 2) — **stop and ask.** Compare the MR's project path against the workspace's own `git remote get-url origin`. If they don't match, ask before Step 3 checks out anything — proceeding means checking out a branch that may not even exist in this repo, or worse, silently operating against the wrong codebase entirely.
 - **The MR isn't actually assigned to or authored by the current user** (Step 2) — **flag it, don't block.** This isn't necessarily wrong — reviewing on someone else's behalf is a legitimate ask — but it's also the single most common typo outcome (pasting `!490` when you meant `!409`). Check `author`/`assignees` against the identity `glab` is authenticated as (or ask, if that's not cheaply available). Mention it in your Step 2 recap and let the user's next reply confirm or correct course, rather than waiting on an explicit answer.
 - **The MR is `merged` or `closed`** (Step 2, already covered) — stop and ask before treating it as active work.
+- **The MR points at no unambiguous Jira ticket** (Step 2.5) — **stop and ask.** Conflicting keys in the title, source branch, description, or linked issues can send status changes and worklogs to the wrong ticket. No key at all is a hard stop: require the actual Jira hostname and ticket key, or exit this workflow without touching the MR, branch, code, or shared Jira state.
+- **The Jira ticket is `Done`, `Closed`, `Merged`, or otherwise terminal** (Step 2.5) — **stop and ask.** Never move completed work backwards merely because an MR still has comments.
+- **The Jira ticket is not actively in development** (Step 2.5) — show its current status and the exact reachable active status, then wait before transitioning. `To Do` normally moves to `In Progress`; `To Review` normally moves back to `In Progress` while review fixes are being made; `Blocked` or an unknown custom status requires a decision.
 - **The MR has zero comments** (`user_notes_count: 0`) (Step 4) — **stop and ask.** Don't manufacture a triage report from nothing. Say there's nothing to review — this is a signal the user picked the wrong MR or it hasn't been reviewed yet, not a workflow to push through anyway.
 - **The local branch has unrelated in-progress work** (Step 1/3, already covered by the dirty-tree check) — but also watch for a branch that's *clean* yet clearly not related to this MR (e.g. `git log` shows commits for a different ticket entirely with no relation to `source_branch`). If the checkout would silently discard the user's mental model of "what I'm currently working on," say what branch you're switching from and to, even when the tree is clean.
 - **A reviewer comment references a file or line that no longer exists** (Step 5) — **flag it, don't block.** Say the referenced code is gone (renamed, deleted, or moved) as an item in the Step 6 report, and let the user decide whether it was already handled elsewhere or needs a fresh look at the new location.
 
-Most of these fold into the existing approval gates — the host guard, Step 2's merged/closed check, Step 6's report — rather than adding new ones. The two that genuinely need their own pause (malformed URL, wrong project) are the two where continuing could touch the wrong code before you've said anything at all; the rest are lower-risk and just need to be surfaced as part of what you're already reporting.
+Most of these fold into the existing approval gates — Step 2.5's Jira gate, Step 6's triage report, and Step 8's final approval — rather than adding ad hoc pauses. Malformed URLs, wrong projects, ambiguous Jira identity, and terminal Jira tickets stop immediately because continuing could touch the wrong code or shared ticket state before the mismatch is settled.
+
+## Internal discovery is not a user-facing report
+
+Steps 0–5 are investigation. Run them quietly. Derive and retain every value you need, then say nothing about the ones that came back fine.
+
+**Never narrate:**
+
+- Which power or skill you activated, or that you're about to follow this workflow.
+- Parsed URL fields (`host`, `project_path`, `project_path_encoded`, `iid`, whether a `#note_` fragment was present).
+- The project profile (package manager, scripts, monorepo tool, framework and version, hook contents, commit convention).
+- Which tool or endpoint you chose, or step numbers and step titles as progress announcements.
+- Checks that passed — host is GitLab, tree is clean, MR project matches origin, ticket is already in active development, branch checked out successfully.
+
+**Do surface:**
+
+- Anything that stops the workflow or needs a decision: malformed/non-GitLab URL, wrong-project MR, merged/closed MR, dirty tree, zero comments, ambiguous or missing Jira identity, terminal/blocked ticket, a needed Jira transition, tool or API failures.
+- The defined gates: Step 2.5's Jira transition, Step 6's triage report, Step 8's summary, Step 9's pre-push choice, Step 10's reply preview, Step 12's lesson preview.
+- One-line flags that don't block: ownership mismatch, a branch switch that could surprise the user, a reviewer comment whose file or line is gone.
+
+A clean run should produce **one short line** before the triage report — for example *"Checking the MR, its Jira ticket, and the workspace before reviewing the comments."* — not a transcript of what you read. A user who wants the derived values will ask; a user who doesn't gets the decision they were waiting for instead of scrolling past it.
+
+A different current branch than `source_branch` is normal, not an alarm. With a clean tree, check it out and move on; only mention the switch when it could discard the user's mental model of what they were working on (see Step 3).
 
 ## Formatting every report to the user
 
-Every blocking step below (6, 8, 9, 10, 12) presents a list of things — comments, fixes, options, replies — and every one of them risks turning into an unreadable wall of text if you free-style the layout. Follow the same three rules everywhere, not just where a step spells it out:
+Every blocking step below (2.5, 6, 8, 9, 10, 12) presents a decision or a list of things — status changes, comments, fixes, options, replies — and each risks becoming unreadable if you free-style the layout. Follow the same three rules everywhere, not just where a step spells it out:
 
 1. **One item, one block.** Give each item its own header line (bold or `###`), then put each field — quote, proposed action, file path — in its own paragraph with a blank line before and after. Never write a field as an indented line directly under a list number: without a blank line, CommonMark treats it as a "lazy continuation" of the same paragraph, and every renderer reflows it into one dense run-on block.
 2. **Tables are for short, single-line facts only** (a file path, a status, a count). The moment a column would hold a full sentence — a reviewer quote, a proposed reply, a multi-clause explanation — stop using a table and switch to the one-block-per-item style from rule 1. A table cell doesn't wrap a paragraph; it just cuts it off or crushes it.
 3. **Separate items with a horizontal rule (`---`) or a blank line**, so a report with five items reads as five distinct chunks, not one paragraph five times as long.
 
-The templates below already follow this. When a step doesn't give you an exact template (Steps 1, 2, 4, 11), still apply these three rules to whatever you report.
+The templates below already follow this. When a step doesn't give you an exact template (Steps 1, 2, 4, 11), still apply these three rules to whatever you actually surface — which, per the section above, is usually only a blocker, a flag, or a gate.
 
 ## Step 0 — Parse the MR URL
 
@@ -134,7 +160,7 @@ Parse from the title:
 - **Ticket key** — `[A-Z]+-\d+`. The project prefix is whatever the MR uses; never assume a specific one. **If the title has no match at all** (no ticket-shaped prefix), don't invent one and don't leave `{TICKET-KEY}` as a literal placeholder in the eventual commit message. Fall back to omitting the ticket segment from the commit message template in Step 8, and mention once that no ticket key was found in the title.
 - **Commit type** — the word before the parentheses (`fix`, `feat`, `chore`, `refactor`, …). Reuse this exact type in Step 9 rather than defaulting to `fix`.
 
-**Ticket identity for optional Jira logging** — collect all ticket-shaped evidence now: keys in the MR title, `source_branch`, Jira browse links in the MR description, and linked issues if exposed. Do not choose one yet when they disagree; Step 11 reconciles them before writing a worklog.
+**Ticket identity for Jira lifecycle synchronization** — collect all ticket-shaped evidence now: keys in the MR title, `source_branch`, Jira browse links in the MR description, and linked issues if exposed. Step 2.5 reconciles this evidence before any checkout or code work; do not postpone disagreement until worklog time.
 
 If `state` is `merged` or `closed`, tell the user and ask whether to proceed (e.g. as a follow-up fix on a new branch).
 
@@ -142,6 +168,47 @@ If `state` is `merged` or `closed`, tell the user and ask whether to proceed (e.
 
 - **Wrong project — actually stop and wait for an answer.** Compare this response's project (from the `project_id`/`web_url` in the payload, or just the `project_path` you already parsed) against the workspace's own remote (`git remote get-url origin`, read in Step 1). If they don't match, this is higher-risk than the author check below: Step 3 is about to check out a branch, and doing that against the wrong repo can silently touch code that has nothing to do with this MR. Ask before Step 3 runs: *"This MR belongs to `{mr project}`, but this workspace's remote is `{local project}`. Wrong URL, or is this intentional (e.g. reviewing a fork)?"*
 - **Not your MR — flag it, but don't block on it.** Check `author.username` (and `assignees[]`, if present) against whatever identity you can confirm — the account `glab` is authenticated as, if cheaply available, or ask the user directly if not. A mismatch isn't automatically wrong (reviewing on someone else's behalf is normal), but it's also the shape of a simple typo (`!490` vs `!409`). Mention it as a line in your Step 2 recap — *"This MR is authored by {author}, not you — flagging in case that's a typo."* — and let the user's next message confirm or correct course, rather than waiting for an explicit answer before continuing.
+
+## Step 2.5 — Verify Jira Ticket and Active Status (BEFORE CHECKOUT)
+
+This happens before Step 3 checks out a branch, before review comments are fetched, and before any code is read or edited. Jira status is shared team state; identify the exact ticket first and never transition on a guessed key.
+
+### Reconcile one authoritative Jira identity
+
+Use the evidence collected in Step 2 to resolve **exactly one `(Jira hostname, ticket key)` pair**:
+
+- **Several keys or conflicting key sources** → 🛑 show each source and ask which ticket this MR belongs to. Do not choose the title or branch by precedence.
+- **One key but several Jira browse-link hostnames** → 🛑 show every `(hostname, key)` candidate and ask which Jira site owns this MR. The same key can exist on more than one tenant.
+- **One key and one browse-link hostname** → use that pair as the candidate.
+- **One key and no hostname** → call `getAccessibleAtlassianResources`. One accessible site becomes the candidate; several require the user to choose. Never infer the site from the ticket prefix.
+- **No key** → 🛑 stop and ask for the Jira ticket. This workflow does not waive Jira verification; an MR without a Jira ticket needs a different/manual review workflow.
+
+Call `getJiraIssue` for the selected pair with at least `summary`, `status`, `assignee`, `issuetype`, and `timetracking`. Compare its key and summary with the MR title/description. A 404, permission failure, different key, or summary that does not match the MR's work is a 🛑 stop for correction — never merely flag a mismatch and continue. Retain the verified `{cloudId}`, hostname, `{TICKET-KEY}`, original status, and browse URL through Step 11.
+
+If Atlassian tools are unavailable, keep the workflow stopped until the user manually supplies the exact Jira hostname, ticket key, summary, and current status. If the ticket is not active, they must apply the exact active transition and confirm the resulting exact status before checkout. This is manual verification, not a synchronization waiver; do not claim Jira was checked or changed by the workflow.
+
+### Decide whether a status change is needed
+
+Use the exact `status.name` plus category; never treat `statusCategory.name === "In Progress"` as proof of the literal status. Jira's broad `indeterminate` category also contains review and blocked states.
+
+- **Active development** (`In Progress`, `In Development`, `Doing`, or the project's verified equivalent) → report it and continue without a write.
+- **New/backlog** (`To Do`, `Backlog`, `Open`) → propose moving it to the project's exact active-development status.
+- **Review state** (`To Review`, `In Review`, `Review`, or verified equivalent) → review feedback means implementation has resumed, so propose moving it back to the exact active-development status.
+- **Blocked or unknown custom state** → show the current state and ask what to do; never clear a blocker or reinterpret a custom state automatically.
+- **Terminal/done** (`Done`, `Closed`, `Merged`, `Resolved`, `Rejected`) → 🛑 stop. Ask whether this is the wrong ticket or whether it must be reopened through a separate, explicitly approved workflow.
+
+When a change is needed:
+
+1. Call `getTransitionsForJiraIssue` and find a transition by exact `to.name` to a genuine active-development state. Never match only on `to.statusCategory`.
+2. Present the current status, exact proposed target, and transition name, then 🛑 wait:
+
+   > Jira `{TICKET-KEY}` is **{current status}**, not actively in development. Move it to **{exact active status}** before I check out the MR branch and start the review fixes?
+
+3. Only after approval, call `transitionJiraIssue`, re-read the issue, and verify the resulting status.
+4. If there is no direct active transition, show the available targets and ask. Do not route through an intermediate status, clear Resolution, or edit another field without separate approval.
+5. If transition or verification fails, report the exact error and keep the workflow stopped until the user applies the exact transition manually and confirms the resulting status. There is no fail-open synchronization waiver.
+
+Record whether Step 11 should return the ticket to review. A successful move from `To Do` or `To Review` into active development normally means **yes**, but the final transition still requires explicit approval in Step 8.
 
 ## Step 3 — Check Out the Right Branch (before touching any code)
 
@@ -361,6 +428,8 @@ Never let this pass stay invisible. In the Step 8 summary, state:
 
 ## Step 8 — Present the Final Summary (BLOCKING)
 
+Before presenting the gate, re-read the verified Jira ticket from Step 2.5. With Atlassian tools, call `getTransitionsForJiraIssue`; in manual mode, ask the user to confirm the exact currently reachable review target. Identify the review status by exact name (`To Review`, `In Review`, `Review`, or the project's verified equivalent), never by status category. If no direct review transition exists, say that now and render the explicit leave-unchanged/manual form below rather than inventing or promising a transition Step 11 cannot perform.
+
 Once all approved fixes are validated, formatted, staged, and self-reviewed, present this shape — one line per fixed comment, not a paragraph, and every open item called out separately so nothing needing the user's attention gets buried:
 
 ```
@@ -394,15 +463,27 @@ Once all approved fixes are validated, formatted, staged, and self-reviewed, pre
 - Smoke test: {result / not applicable}
 - Build: {result / deferred to CI}
 
+**Jira after replies**
+- Ticket: `{TICKET-KEY}` — currently **{current status}**
+- If a direct review transition exists:
+  - Proposed: transition to **{exact review status}** after the push and approved thread replies/resolutions
+  - Approve that Jira transition? (yes / leave unchanged)
+- If no direct review transition exists:
+  - Proposed: leave Jira unchanged in **{current status}**; no direct review transition is available
+  - Confirm leave unchanged/manual? (yes / stop and inspect the available transitions)
+
 ---
 
 **Commit message:** `{type}({TICKET-KEY}): address MR review comments`
 
 Ready to commit and push? (yes / let me review first / adjust message)
-**Time spent on this review pass?** (e.g. `1h`, `30m`, `2h 30m` — or skip)
 ```
 
-Omit any section that's empty (no skipped items → drop that heading entirely, don't write "none") — **except Self-review, which always appears**, since it's the only place that pass surfaces to the user at all.
+Omit any section that's empty (no skipped items → drop that heading entirely, don't write "none") — **except Self-review and Jira after replies, which always appear**. The first proves review happened; the second proves ticket status was checked and makes the final shared-state decision explicit.
+
+**Jira approval is independent from commit approval and time logging.** If the reply doesn't clearly cover the proposed review transition, ask before Step 9 rather than inferring it. "Ready to commit" authorizes only commit and push. Retain the explicit Jira answer for Step 11 — do not ask again there unless the ticket's status or reachable transitions changed.
+
+**Do not ask for time spent at this gate.** The worklog question belongs at the very end of Step 11, after the push, after every approved reply and resolution, and after the review transition is applied or explicitly left unchanged. Asking here makes the user estimate work that hasn't finished yet. If they volunteer a duration anyway, treat it as a note to confirm in Step 11 — never as the logged value.
 
 **If the Self-review section offered a discovered resource, treat the user's answer to it as part of this gate.** "Yes, run it" means run it against `git diff --cached`; if it changes anything, loop through definitive validation, stage by name, run the formatter, re-stage, show the new cached diff/evidence, and re-present this summary before committing. A plain "yes" to the commit question with no mention of the checklist means they're fine proceeding without it; don't re-ask.
 
@@ -539,33 +620,66 @@ mcp_gitlab_glab_api
 
 Never leave a fixed comment unresolved, and never resolve without a reply explaining what changed. For questions and disagreements, resolve only after the user confirms.
 
-## Step 11 — Log Time Spent
+### Recover safely from partial publication
 
-Use the duration gathered in Step 8 — **don't ask again.**
+Keep a per-discussion publication ledger containing the approved reply body, posted reply note ID (when successful), required resolution state, and confirmed resolution result. If any reply or resolution fails, stop the pass, re-fetch all affected discussions from GitLab, and reconcile the ledger against the remote notes and `resolved` state. Retry only the missing action: never repost an approved reply already present, never resolve a thread whose approved reply is absent, and never treat a locally recorded API success as sufficient when the re-fetch disagrees. Resume Step 11 only after every approved action is observed remotely; otherwise report the remaining failures and leave Jira active.
 
-Before writing any worklog, reconcile ticket identity from Step 2:
+## Step 11 — Return Jira to Review and Log Time
 
-- Exactly one key and title/branch/description agree → use it, preserving any Jira browse-link hostname as site evidence.
-- Several keys, sources disagree, or Jira links point at different hosts → show them and ask which ticket/site receives the time.
-- No unambiguous key → skip logging rather than guessing.
+Use the verified Jira hostname and `{TICKET-KEY}` retained from Step 2.5, plus its `{cloudId}` when tools are available. Do not re-infer identity from the MR title at the end. If the MR's ticket evidence changed during the run, stop and reconcile it again before any Jira write.
 
-If the user gave a duration and identity is unambiguous, resolve and verify the Jira site:
+### Publication success is a hard precondition for review status
 
-1. A matching Jira browse URL exists → use its hostname as the `cloudId` candidate.
-2. Otherwise call `getAccessibleAtlassianResources`. If several sites are accessible, do **not** infer ownership from the ticket prefix alone; ask which site, or call `getJiraIssue` on the candidate and show its summary for confirmation.
-3. Verify the chosen `cloudId` + key resolves to the expected issue before writing.
-4. `addWorklogToJiraIssue` with that verified `cloudId`, reconciled `issueIdOrKey`, and `timeSpent`.
+Return Jira to review only after recording all of these as successful:
 
-`timeSpent` takes the same format as an estimate: `30m`, `2h`, `1d`, or a
-combination like `2h 30m`. A range (`1-2h`) is invalid — ask for a single value.
+- The approved commit was pushed to the MR source branch.
+- Every thread reply the user approved was posted.
+- Every approved resolvable thread was resolved.
 
-This step depends on the Atlassian MCP server. If those tools aren't available, say so and give the user the ticket key and duration to log manually — don't treat it as a workflow failure. The code work is already complete by this point.
+Intentionally skipped replies are not failures, but a failed push, failed approved reply, or failed approved resolution leaves Jira in active development. Report the exact GitLab failure and **do not run the Jira review transition**. The closing time-log question below still runs, because time was spent even when publication failed.
 
-If the user declined in Step 8, skip without asking again.
+### Re-read before changing shared state
+
+Call `getJiraIssue` again immediately before automated writes. Another person or automation may have changed the ticket while review fixes were in progress. In manual Jira mode, ask the user to confirm the exact current status again before giving the transition instruction; never reuse the start-of-run status as current evidence.
+
+- **Already in the exact approved review status** → report it and skip the transition call.
+- **Still in the active-development status from Step 2.5** → apply the review transition only if the user approved it in Step 8.
+- **Now terminal, blocked, or otherwise different** → do not use the old approval. Show the new status and ask what to do.
+- **User declined the Step 8 transition** → leave status unchanged and report that choice.
+
+For an approved automated transition, and only when the publication precondition passed:
+
+1. Call `getTransitionsForJiraIssue` again.
+2. Match the exact review target approved in Step 8 by `to.name`; never match only on `statusCategory`.
+3. If that target is no longer directly reachable, report the available targets and stop the status change. Do not choose an alternate review-like name or route through an intermediate status.
+4. Call `transitionJiraIssue`, then re-read the issue and verify the resulting exact status. A successful API response without the expected resulting status is not sufficient evidence.
+5. Report transition failures as failures; never claim Jira is back in review when it is not.
+
+In manual Jira mode, and only when publication succeeded, show the verified ticket URL and exact review target approved in Step 8, ask the user to apply that transition, and wait for their confirmation of the resulting exact status. Do not mark the lifecycle complete from an instruction alone.
+
+### Ask for time spent last, then log it
+
+**This is the final question in the workflow.** It comes after the commit was pushed, after every approved reply and resolution was published, and after the review transition was applied or explicitly left unchanged — the point where the user can actually see what the pass cost. Never ask earlier in the run.
+
+Ask once, in one line, with the outcome as context, then 🛑 wait:
+
+> Pushed, threads resolved, and Jira `{TICKET-KEY}` is now **{resulting status}**. How much time should I log against it? (`1h`, `30m`, `2h 30m` — or skip)
+
+Then write it:
+
+```
+addWorklogToJiraIssue → cloudId: {verified}, issueIdOrKey: {verified key}, timeSpent: "{duration}"
+```
+
+`timeSpent` accepts `30m`, `2h`, `1d`, or a combination like `2h 30m`. A range (`1-2h`) is invalid — ask for one value. **Never infer the duration** from elapsed session time, message timestamps, or your own sense of how long the work took; it comes from the user or the worklog is skipped.
+
+Ask even when earlier stages failed. Time was still spent, so a failed push, a failed reply, or a declined, blocked, or failed status transition does not remove the question — say what failed, then ask. The worklog and status transition are independent approvals: log the confirmed duration even if the transition never happened, unless the user explicitly tied them together. Report each result separately.
+
+If the user skips, drop it and don't re-ask. If they volunteered a duration back at Step 8, confirm that exact value here before writing rather than logging it silently. If Atlassian tools are unavailable, show the verified ticket URL and the confirmed duration for manual entry — never suppress the worklog because status synchronization could not complete, and never claim the manual entry succeeded until the user confirms it.
 
 ## Step 12 — Optional Follow-Up: Capture Recurring Lessons
 
-This is **not a default blocking gate**. After replies, resolutions and time logging are complete, say in one line whether any reusable pattern was noticed and offer lesson capture as an optional follow-up. Run the file mutation only when the user opts in; a user who says "done" or does not engage is finished with the workflow.
+This is **not a default blocking gate**. After replies, resolutions, Jira status synchronization, and time logging are complete, say in one line whether any reusable pattern was noticed and offer lesson capture as an optional follow-up. Run the file mutation only when the user opts in; a user who says "done" or does not engage is finished with the workflow.
 
 ### What earns an entry
 
@@ -683,16 +797,14 @@ If the user skips, drop it — don't re-raise it next run.
 
 ## Step 13 — Where this skill ends
 
-The threads are resolved, the worklog is logged. Say what happened in Step 12 too — even a one-line "no recurring patterns worth recording this time" closes the loop, since a summary that mentions everything except the step most likely to be silently skipped reads as incomplete. **Stop here.** Do not:
+The threads are resolved, the Jira ticket has either returned to its approved review status or its unchanged/manual state is explicit, and the approved worklog is recorded or reported as skipped/failed. Say what happened in Step 12 too — even a one-line "no recurring patterns worth recording this time" closes the loop, since a summary that mentions everything except the step most likely to be silently skipped reads as incomplete. **Stop here.** Do not:
 
 - ❌ Merge or approve the MR
 - ❌ Delete the source branch
 - ❌ Transition the ticket to Done / Merged / Closed
 - ❌ Start on another set of review comments
 
-Merging is the reviewer's call. The push you just made appears in the existing MR;
-they'll see it and re-review. Transitioning the ticket to Done before they approve
-tells the board the work is accepted when it hasn't been.
+Merging is the reviewer's call. The push you just made appears in the existing MR; they'll see it and re-review. Step 11 may return Jira to the approved review status, but transitioning it to Done before merge still tells the board the work is accepted when it hasn't been.
 
 If the user explicitly asks you to do one of these, say what will happen and get
 confirmation, rather than treating the request as blanket permission.
@@ -734,29 +846,32 @@ This affects `/discussions`, `/notes`, `/projects`, and every other collection. 
 
 | Step | Action |
 | --- | --- |
+| **Output discipline** | **Steps 0–5 run quietly. Never narrate power activation, parsed URL fields, the project profile, tool choice, step numbers, or checks that passed. Surface only blockers, one-line flags, and the defined gates — one short line before the triage report** |
 | Parse URL | Split on `/-/` → `host`, `project_path` (encode `/` → `%2F`), `iid`, optional `note_id`. Malformed/non-GitLab URL → stop and ask, don't guess |
 | Profile | Derive directly from lockfile, `package.json`, `.husky/`, `git log`, `git status` — no external tool, no other power |
 | Host guard | Git host isn't GitLab → stop, tell the user, don't improvise `gh` |
-| Fetch MR | `glab_api` → `.../merge_requests/{iid}` → `source_branch`, title, type, `user_notes_count`. No ticket key in title → drop that segment, don't leave a literal placeholder |
-| **Sanity check** | Compare the MR's project against the workspace's own remote; compare `author`/`assignees` against the current user. Flag a mismatch, don't block on it — let the user's next reply confirm or correct course |
+| Fetch MR | `glab_api` → `.../merge_requests/{iid}` → `source_branch`, title, type, `user_notes_count`, Jira-key/link evidence. No ticket key in title → do not guess; Step 2.5 reconciles all sources |
+| **Sanity check** | Compare the MR's project against the workspace remote and author/assignees against the current user. Wrong project stops; ownership mismatch is flagged |
+| **Jira before work** | **Reconcile one key + site, verify the issue, and inspect exact status before checkout. `To Do`/`To Review` → propose exact active-development transition and wait. Blocked/unknown/done → stop and ask. Verify the resulting status** |
 | Branch | Compare to the current branch from Step 1; check the dirty-tree status before switching |
 | Fetch comments | `glab_api` → `.../discussions` with `output: ndjson`; drop `system: true`; **reconcile vs `user_notes_count`**. Zero comments → stop, ask, don't produce an empty triage report |
 | Triage | Classify each, verify reviewer-named APIs in `node_modules`, check cross-comment interactions, check against conventions relevant to the file actually edited, cross-check against this skill's own `review-feedback-patterns.md` if it exists — no edits. Referenced file/line no longer exists → flag explicitly, don't skip silently |
 | **Report** | **Full triage report (including general MR-level comments), wait for go-ahead — hard stop** |
 | Fix | One at a time; lint via `lint:{project}` script → `nx lint {project}` → generic `lint`, narrowest scope that covers the change. Self-review pass at the end: discover review resources by reading their **descriptions**, never by matching filenames; offer what you found rather than silently applying it; always run the generic diff scan regardless. Disclosed in the Step 8 summary, with the offer folded into that same gate |
-| **Summary** | **Validate, stage by name, run formatter, re-stage, self-review `git diff --cached`, then show summary + evidence + commit message and wait — hard stop. Any later mutation loops back through this gate** |
+| **Summary** | **Validate, stage by name, format, re-stage, self-review `git diff --cached`, then show summary + evidence + commit message + exact Jira review target. Wait for independent commit and Jira approvals; later mutations loop back** |
 | Commit | Re-check that `git diff --cached` matches the approved set, then commit — no staging or formatting after approval; terminal git, not MCP tools |
 | **Pre-push** | **If the hook runs builds, present (a)/(b)/(c) and wait — hard stop. Never pick `--no-verify` yourself** |
 | Push | `git push`, or `git push --no-verify` per the user's answer. Divergence → fetch, show ahead/behind, stop for an explicit reconciliation choice and renewed review; never merge/rebase/force implicitly |
-| **Replies** | **Preview replies, wait for approval — hard stop.** Then reply inline per thread (Already-addressed items too), resolve every thread replied to |
-| Log time | Use the duration from Step 8 — don't ask again. Reconcile key + Jira hostname evidence, verify the issue on the selected `cloudId`, then `addWorklogToJiraIssue` |
+| **Replies** | **Preview replies, wait for approval — hard stop.** Then reply inline and resolve per approved thread. Track reply note IDs and resolution state; on partial failure re-fetch discussions, reconcile remote state, and retry only missing actions — never repost an existing reply |
+| **Jira after replies** | Only after a successful push plus every approved reply/resolution: re-read the verified ticket. If separately approved and still active, transition by exact `to.name` to the Step 8 review target and verify. Publication failure leaves Jira active |
+| **Time log (last)** | **Ask for time spent only here — after push, replies, resolutions, and the status change — then log the confirmed duration. Never ask at Step 8, never infer it, and still ask when earlier stages failed** |
 | **Lessons** | **Optional follow-up only. Patterns that would apply again; skip one-offs and lint-enforced items. Eligible items include Question/Disagree that became real fixes. `×N` count, append/deduplicate `[sources: MR !N note M; ...]`, promote to top at ×3. If accepted, preview and wait — hard stop** |
-| **Stop** | **Do not merge, approve, delete branch, or set Done. The reviewer decides.** |
+| **Stop** | **Do not merge, approve, delete branch, or set Jira Done. The reviewer decides.** |
 | Never (process) | Commit or push without approval, post replies without previewing, skip the report, edit before approval, guess answers to reviewer questions, reply as a general MR comment instead of inline, resolve silently, force-push without asking, merge or approve the MR, escalate to `--no-verify` when the user's chosen option fails |
 | Never (tooling) | Use `glab_mr_view`/`glab_mr_note` (always fail — use `glab_api`), omit `ndjson` on list endpoints, triage only the URL's `note_id`, use git MCP tools (`git_add`/`git_commit`) when hooks exist — use terminal commands, or dispute a reviewer-named API without searching the dependency tree |
-| Never (hardcode) | Host, project path, package manager, lint command, branch name, commit format, Jira site, ticket prefix — all derived in Steps 0–2 |
-| Never (external dependency) | Call a tool or power that isn't installed. This skill relies only on `git` and the `glab` MCP server — no other Kiro power is ever required, and the Atlassian step (11) is purely optional |
-| Never (silent assumptions) | Proceed on a malformed URL, an MR from a different project, an unassigned/not-yours MR, or a zero-comment MR without surfacing it first — see "Mistakes a user can hand you" |
+| Never (hardcode) | Host, project path, package manager, lint command, branch name, commit format, Jira site, Jira active/review status names, ticket prefix — all derived in Steps 0–2.5 |
+| Never (external dependency) | Call another Kiro power. This skill relies on `git` and GitLab access; Atlassian access automates Steps 2.5/11. When Jira tooling is unavailable, require manual verification of the exact Jira hostname, ticket key, summary, and current status, plus confirmation of each required exact transition and its resulting status; otherwise stop |
+| Never (silent assumptions) | Proceed on a malformed URL, wrong-project MR, ambiguous/missing Jira identity, terminal/blocked Jira ticket, unassigned/not-yours MR, or zero-comment MR without surfacing it first |
 | Never (brittle discovery) | Decide what a project's review resources are from a hardcoded filename list. Read each candidate's own `description` and judge from what it says it does — projects name these anything, and a fixed list misses whatever you didn't predict |
 
 
