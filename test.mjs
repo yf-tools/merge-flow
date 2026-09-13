@@ -14,7 +14,7 @@
  */
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -42,7 +42,7 @@ function truthy(label, actual) {
 const AGENT_PLUGINS_VERSION = "1.0.0";
 const PLUGIN_SCHEMA_URL = `https://agent-plugins.org/schemas/${AGENT_PLUGINS_VERSION}/plugin.schema.json`;
 const PLUGIN_REQUIRED = ["$schema", "name"];
-const PLUGIN_ALLOWED = [
+const PLUGIN_ALLOWED = new Set([
   "$schema",
   "name",
   "version",
@@ -53,7 +53,7 @@ const PLUGIN_ALLOWED = [
   "license",
   "keywords",
   "extensions",
-];
+]);
 
 function testPluginManifest() {
   const path = join(ROOT, "plugin.json");
@@ -64,7 +64,7 @@ function testPluginManifest() {
   const json = JSON.parse(readFileSync(path, "utf8"));
   const keys = Object.keys(json);
 
-  const illegal = keys.filter((k) => !PLUGIN_ALLOWED.includes(k));
+  const illegal = keys.filter((k) => !PLUGIN_ALLOWED.has(k));
   eq("plugin.json: no keys outside the spec", illegal, []);
 
   const missing = PLUGIN_REQUIRED.filter((k) => !keys.includes(k));
@@ -133,12 +133,9 @@ function testSkillFrontmatter() {
     truthy(`${label}: has description`, desc.length > 0);
     truthy(
       `${label}: description within ${SKILL_DESCRIPTION_MAX} chars (is ${desc.length})`,
-      desc.length <= SKILL_DESCRIPTION_MAX
+      desc.length <= SKILL_DESCRIPTION_MAX,
     );
-    truthy(
-      `${label}: description states when to use it`,
-      /\b(use when|activate|use before|use this)\b/i.test(desc)
-    );
+    truthy(`${label}: description states when to use it`, /\b(use when|activate|use before|use this)\b/i.test(desc));
   }
 }
 
@@ -147,10 +144,7 @@ function testDeclaredFilesExist() {
   for (const f of ["LICENSE", "README.md", "POWER.md", "plugin.json"]) {
     truthy(`layout: ${f} exists at package root`, existsSync(join(ROOT, f)));
   }
-  truthy(
-    "layout: skills/mr-comments/SKILL.md exists",
-    existsSync(join(ROOT, "skills", "mr-comments", "SKILL.md"))
-  );
+  truthy("layout: skills/mr-comments/SKILL.md exists", existsSync(join(ROOT, "skills", "mr-comments", "SKILL.md")));
 }
 
 function testWorkflowPolicyContracts() {
@@ -167,19 +161,19 @@ function testWorkflowPolicyContracts() {
     "Checks that passed — host is GitLab, tree is clean",
     "A different current branch than `source_branch` is normal, not an alarm",
     "Output discipline",
-    "Step 2.5 — Verify Jira Ticket and Active Status (BEFORE CHECKOUT)",
+    "Step 2.5 — Verify the Jira Ticket (silent; no writes, no gate)",
     "Ticket identity for Jira lifecycle synchronization",
     "git merge --ff-only",
     "git diff --cached",
     "No key at all is a hard stop",
-    "If Atlassian tools are unavailable, keep the workflow stopped",
+    "ask once — here, because you genuinely cannot proceed without it",
     "exactly one `(Jira hostname, ticket key)` pair",
     "One key but several Jira browse-link hostnames",
     "summary that does not match the MR's work is a 🛑 stop",
     "getJiraIssue",
-    "Never match only on `to.statusCategory`",
-    "Only after approval, call `transitionJiraIssue`",
-    "verify the resulting status",
+    "Never match on `to.statusCategory` alone",
+    "Call `transitionJiraIssue` with the exact transition recorded in Step 2.5",
+    "confirm the resulting `status.name` is exactly the approved target",
     "Jira approval is independent from commit approval and time logging",
     "If no direct review transition exists:",
     "Confirm leave unchanged/manual?",
@@ -209,7 +203,8 @@ function testWorkflowPolicyContracts() {
     "Optional Follow-Up: Capture Recurring Lessons",
     "append-only provenance",
     "Never replace or drop earlier sources",
-  ]) truthy(`workflow: contains ${phrase}`, skill.includes(phrase));
+  ])
+    truthy(`workflow: contains ${phrase}`, skill.includes(phrase));
 
   for (const [label, text, forbidden] of [
     ["workflow", skill, "Pushed with `--no-verify`"],
@@ -229,15 +224,22 @@ function testWorkflowPolicyContracts() {
     ["power", power, "including a bare '#note_' link"],
     ["power", power, "no ticket transitions"],
     ["README", readme, "only if you want Step 11's time"],
-  ]) truthy(`${label}: excludes stale policy ${forbidden}`, !text.includes(forbidden));
+  ])
+    truthy(`${label}: excludes stale policy ${forbidden}`, !text.includes(forbidden));
 
   truthy("plugin: Jira lifecycle release is 1.3.0", plugin.includes('"version": "1.3.0"'));
   truthy("power: activation requires a full MR URL", power.includes("full GitLab merge request URL"));
-  truthy("power: documents Jira pre-check", powerFlat.includes("ensure that ticket is actively in development before checkout"));
+  truthy(
+    "power: documents Jira pre-check",
+    powerFlat.includes("Verify the ticket silently — stopping only if it's terminal,"),
+  );
   truthy("power: prohibits fail-open Jira waiver", power.includes("There is no fail-open synchronization waiver"));
   truthy("README: usage requires a full MR URL", readme.includes("Paste a full GitLab merge request URL"));
   truthy("README: documents pre-work Jira verification", readme.includes("Reads the Jira ticket before code work"));
-  truthy("README: gates review status on publication", readme.includes("successful push and all approved replies/resolutions"));
+  truthy(
+    "README: gates review status on publication",
+    readme.includes("successful push and all approved replies/resolutions"),
+  );
   truthy("README: no-verify stays private", readme.includes("private execution detail"));
 
   const outputDiscipline = skill.indexOf("## Internal discovery is not a user-facing report");
@@ -245,25 +247,33 @@ function testWorkflowPolicyContracts() {
   const parseUrl = skill.indexOf("## Step 0 — Parse the MR URL");
   truthy(
     "workflow: output discipline precedes formatting rules and the first step",
-    outputDiscipline >= 0 && outputDiscipline < formatting && formatting < parseUrl
+    outputDiscipline >= 0 && outputDiscipline < formatting && formatting < parseUrl,
   );
 
   const mrDetails = skill.indexOf("## Step 2 — Fetch MR Details");
-  const jiraStart = skill.indexOf("## Step 2.5 — Verify Jira Ticket and Active Status");
+  const jiraStart = skill.indexOf("## Step 2.5 — Verify the Jira Ticket");
   const checkout = skill.indexOf("## Step 3 — Check Out the Right Branch");
   truthy(
     "workflow: MR evidence then Jira verification before checkout",
-    mrDetails >= 0 && mrDetails < jiraStart && jiraStart < checkout
+    mrDetails >= 0 && mrDetails < jiraStart && jiraStart < checkout,
   );
 
-  const activeApproval = skill.indexOf("Only after approval, call `transitionJiraIssue`");
-  truthy("workflow: active transition is gated before checkout", activeApproval > jiraStart && activeApproval < checkout);
+  // The active-development transition itself is deliberately deferred past checkout
+  // (it's applied in Step 7, after Step 6 approval) — only identity/terminal-status
+  // verification is gated before checkout. Assert that deferral is real, not that the
+  // transition happens early.
+  const applyTransition = skill.indexOf("### First: apply the Jira transition, if it was approved");
+  const step7 = skill.indexOf("## Step 7 — Fix One Comment at a Time");
+  truthy(
+    "workflow: active-development transition is applied in Step 7, after checkout and approval",
+    applyTransition > checkout && applyTransition > step7,
+  );
 
-  const noKeyStop = skill.indexOf("- **No key** → 🛑 stop and ask for the Jira ticket", jiraStart);
-  const manualToolStop = skill.indexOf("If Atlassian tools are unavailable, keep the workflow stopped", jiraStart);
+  const noKeyStop = skill.indexOf("**No key**", jiraStart);
+  const manualToolStop = skill.indexOf("If Atlassian tools are unavailable, ask once", jiraStart);
   truthy(
     "workflow: missing Jira identity and unavailable tooling fail closed before checkout",
-    noKeyStop > jiraStart && noKeyStop < checkout && manualToolStop > jiraStart && manualToolStop < checkout
+    noKeyStop > jiraStart && noKeyStop < checkout && manualToolStop > jiraStart && manualToolStop < checkout,
   );
 
   const validation = skill.indexOf("### Definitive validation and staging");
@@ -274,7 +284,12 @@ function testWorkflowPolicyContracts() {
   const jiraFinish = skill.indexOf("## Step 11 — Return Jira to Review and Log Time");
   truthy(
     "workflow: validate, approve, commit, reply, then synchronize Jira",
-    validation >= 0 && validation < selfReview && selfReview < approval && approval < commit && commit < replies && replies < jiraFinish
+    validation >= 0 &&
+      validation < selfReview &&
+      selfReview < approval &&
+      approval < commit &&
+      commit < replies &&
+      replies < jiraFinish,
   );
 
   const noDirectReview = skill.indexOf("If no direct review transition exists:", approval);
@@ -282,14 +297,17 @@ function testWorkflowPolicyContracts() {
   const jiraApproval = skill.indexOf("Jira approval is independent from commit approval and time logging", approval);
   truthy(
     "workflow: Step 8 renders and gates both reachable and unreachable Jira review outcomes before commit",
-    noDirectReview > approval && noDirectReview < leaveManual && leaveManual < jiraApproval && jiraApproval < commit
+    noDirectReview > approval && noDirectReview < leaveManual && leaveManual < jiraApproval && jiraApproval < commit,
   );
 
   const publicationRecovery = skill.indexOf("### Recover safely from partial publication", replies);
-  const remoteCompletion = skill.indexOf("Resume Step 11 only after every approved action is observed remotely", publicationRecovery);
+  const remoteCompletion = skill.indexOf(
+    "Resume Step 11 only after every approved action is observed remotely",
+    publicationRecovery,
+  );
   truthy(
     "workflow: partial publication is reconciled idempotently before Jira synchronization",
-    publicationRecovery > replies && publicationRecovery < remoteCompletion && remoteCompletion < jiraFinish
+    publicationRecovery > replies && publicationRecovery < remoteCompletion && remoteCompletion < jiraFinish,
   );
 
   const publicationGate = skill.indexOf("### Publication success is a hard precondition for review status", jiraFinish);
@@ -297,20 +315,17 @@ function testWorkflowPolicyContracts() {
   const finalTransition = skill.indexOf("Call `transitionJiraIssue`, then re-read the issue", jiraFinish);
   truthy(
     "workflow: publication success and Jira re-read precede final transition",
-    publicationGate > jiraFinish && publicationGate < finalReread && finalReread < finalTransition
+    publicationGate > jiraFinish && publicationGate < finalReread && finalReread < finalTransition,
   );
 
   const noEarlyTimeAsk = skill.indexOf("Do not ask for time spent at this gate", approval);
   const timeAsk = skill.indexOf("### Ask for time spent last, then log it", jiraFinish);
   const timeQuestion = skill.indexOf("How much time should I log against it?", timeAsk);
   const lessons = skill.indexOf("## Step 12 — Optional Follow-Up: Capture Recurring Lessons");
-  truthy(
-    "workflow: time is not requested at the commit gate",
-    noEarlyTimeAsk > approval && noEarlyTimeAsk < commit
-  );
+  truthy("workflow: time is not requested at the commit gate", noEarlyTimeAsk > approval && noEarlyTimeAsk < commit);
   truthy(
     "workflow: time is requested last, after publication and the review transition",
-    timeAsk > finalTransition && timeAsk < timeQuestion && timeQuestion < lessons
+    timeAsk > finalTransition && timeAsk < timeQuestion && timeQuestion < lessons,
   );
 
   const checkoutFetch = skill.indexOf("git fetch origin {source_branch}");

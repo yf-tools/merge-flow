@@ -9,7 +9,7 @@ Triage and fix GitLab merge request review comments **one at a time** — each g
 
 Nothing in this workflow is project-specific. Host, project path, package manager, lint command, branch name, commit format, Jira site, and Jira workflow statuses are all **derived at runtime** (Steps 0–2.5), directly from the repo and connected services — never hardcoded, and never carried over from a previous session. This skill has no dependency on any other Kiro power; re-derive everything every time.
 
-## The nine rules that matter most
+## The twelve rules that matter most
 
 1. **Verify the Jira ticket early and silently; ask about moving it later.** Identify and validate the ticket before any code work, and stop only if it's terminal, blocked, or unidentifiable. A needed status transition is not urgent — carry it to the triage report in Step 6 and apply it in Step 7. Never reclassify the current status as "active-equivalent" to avoid asking. (Steps 2.5, 6, 7)
 2. **Fetch every comment before triaging any of them.** Reconcile your note count against `user_notes_count`, and keep threads, notes, and reviewer comments as three separate numbers. A single comment on a freshly-reviewed MR almost always means you under-fetched. (Step 4)
@@ -20,8 +20,11 @@ Nothing in this workflow is project-specific. Host, project path, package manage
 7. **Let the user choose how to handle a heavy pre-push hook.** Never pick `--no-verify` yourself. (Step 9)
 8. **Preview thread replies and stop.** No posting or resolving before approval. (Step 10)
 9. **If recurring lesson capture is offered and accepted, preview its local steering-file change and stop.** Approval covers the previewed lines only. It shapes future requests in this clone. (Step 12)
+10. **A discovered self-review resource's offer is answered by the user, inside the Step 8 card — never pre-answered by you before it, and never resolved off the back of a question that isn't "yes."** The named checklist's question lives as a line in the Step 8 summary itself; don't ask it separately first, substitute your own generic pass for the reply, and present the card as if that settled it — and if the user later asks *"did you run it?"* rather than answering the offer, correctly saying "no" does not license running it right then. That's still you closing the gate; ask directly and wait. (Step 7's self-review pass, Step 8)
+11. **Batch independent tool calls; never parallelize the actual edits.** Steps 1's profiling, 5's per-thread file reads, and 7's validation commands are read-only and independent — fire them together as plain parallel tool calls, no sub-agents needed. Step 7's fixes stay single-threaded and sequential in this process, because a concurrent edit looks identical, to the hunk-attribution check in rule 5, to an untracked edit from someone else. (Steps 1, 5, 7)
+12. **The Jira review-transition result and the time-log question are one message, not two.** Don't report "Jira is now {status}" as its own message and then ask about time separately afterward — the resulting status belongs inside the same line as the time-log ask, appearing there for the first time. Same failure shape as rule 10: saying the fact once yourself and then folding it into a combined ask anyway is two messages doing the work of one. (Step 11)
 
-Rules 1 and 3–9 are hard stops when applicable. The Jira transition, pre-push, and lesson gates are conditional; none authorizes a different remote mutation.
+Rules 1 and 3–9 are hard stops when applicable. Rules 11 and 12 are standing constraints on how you execute and how you phrase, not gates. The Jira transition, pre-push, and lesson gates are conditional; none authorizes a different remote mutation.
 
 **Never explain a change you didn't make with a guess.** If an unexpected hunk, an unexplained line count, or a status you can't account for appears, the user is the cheapest source of truth — ask. Attributing it to a formatter, a plugin, or a config, when the tool's own output doesn't say so, converts a one-turn question into a false statement on the record. This is rule zero because it is what makes rules 1, 5, and 6 fail quietly rather than loudly.
 
@@ -91,6 +94,14 @@ Every blocking step below (2.5's terminal/blocked stop, 6, 6b, 7's hunk-attribut
 
 The templates below already follow this. When a step doesn't give you an exact template (Steps 1, 2, 4, 11), still apply these three rules to whatever you actually surface — which, per the section above, is usually only a blocker, a flag, or a gate.
 
+## Anything posted to GitLab or Jira gets written like a person wrote it
+
+The formatting rules above are for the report you show in chat. Thread replies (Step 10) are different: they land on a real reviewer's screen as a GitLab notification, sitting next to whatever a human teammate would have typed. A templated-sounding reply is the fastest way to make a reviewer feel like their comment got a form response instead of an answer.
+
+The single most common tell is opening every reply the same way — a short word, a dash, then the fix (`Fixed — did X.`, `Renamed — did Y.`, `Added — did Z.`). Six replies posted in the same batch with that same shape read as generated, even if each one is individually accurate. Write plain sentences instead: state what changed, skip the dash-led fragment, and vary how each one opens. Step 10 has the worked examples — read them before posting a batch of replies, not just the first time.
+
+This applies to Jira text too, wherever this skill writes any (worklog comments, manual-mode instructions) — same principle, same fix: write it the way you'd actually say it, not as a template with the blanks filled in.
+
 ## Step 0 — Parse the MR URL
 
 A GitLab MR URL has a fixed shape:
@@ -136,6 +147,8 @@ This step establishes the project's real conventions. This power ships no scanne
 
 Non-JS ecosystems have equivalents (`Cargo.toml`, `pyproject.toml`, `go.mod`, `pom.xml`); the principle is unchanged — read the real config, don't assume.
 
+**Issue these as parallel tool calls in one turn, not one at a time.** None of these reads depend on another's result — the package manager doesn't need the framework detected first, and the hook contents don't need the commit convention. Reading them serially just adds latency for no benefit. The only sequencing constraint in this step is that it all finishes before Step 2.
+
 ### What you carry forward from this step
 
 Keep these in mind as plain facts, not a structured object — there's no schema to satisfy, just answers you'll reuse:
@@ -157,6 +170,8 @@ Keep these in mind as plain facts, not a structured object — there's no schema
 Do not improvise `gh` commands from a GitLab workflow.
 
 Treat anything you couldn't detect as "not detected" — ask or skip the dependent step. Don't substitute a default.
+
+Self-review resource discovery (Step 7) happens later, once there's a real diff to check something against — don't do it here. It's a handful of cheap reads when it does run; no need to front-load it.
 
 ## Step 2 — Fetch MR Details
 
@@ -194,7 +209,7 @@ If `state` is `merged` or `closed`, tell the user and ask whether to proceed (e.
 
 Identify and validate the ticket now. **Do not transition it here, and do not ask about transitioning it here** — that question belongs in Step 6, attached to the triage report. Jira status is shared team state; identify the exact ticket first and never transition on a guessed key.
 
-Run this quietly alongside Step 2's MR fetch. The two are independent reads, so issue them together rather than waiting on one to start the other — the whole point of this phase is to reach the triage report fast.
+Run this quietly alongside Step 2's MR fetch. The two are independent reads, so issue them together rather than waiting on one to start the other — the whole point of this phase is to reach the triage report fast. Concretely: `iid` came from the URL in Step 0, not from Step 2's response, so Step 2's MR fetch and Step 4's discussions fetch don't actually depend on each other — fire both of those and the Jira identity resolution (`getAccessibleAtlassianResources` / `getJiraIssue`, once you have a key to check) as parallel tool calls in one batch rather than waiting on each in turn. The one real dependency is Jira identity resolution on *evidence from* Step 2's title/description when the URL alone didn't carry a ticket key — in that specific case, issue Step 2 first, then Jira identity and Step 4 together once the title is in hand.
 
 ### Reconcile one authoritative Jira identity
 
@@ -259,6 +274,8 @@ Also record whether Step 11 should return the ticket to review. A move from `To 
 **Do Step 4's discussion fetch before this checkout.** It's an independent read that needs no local state, and it decides whether this step should run at all: a zero-comment MR stops the workflow, and stopping *after* switching the user's branch means you changed their working tree for a run that ended immediately. Batch the MR fetch, the discussions fetch, and the Jira reads together, then check out once you know there is something to triage. The step numbering reflects logical dependency, not a required serial order — Step 5 needs the branch checked out, so the checkout must land before triage, and that is the only ordering constraint here.
 
 **Check the dirty-tree status from Step 1 first — it gates every path below.** If dirty, stop and offer only: stay on the current branch, or create a named stash with the exact recovery command (`git stash pop`). Do not propose committing unrelated changes onto this MR branch, and never offer discard as a convenience path; if the user explicitly requests deletion, show per-file diffs and reconfirm first.
+
+**A clean tree isn't automatically safe to switch away from.** Before checking out, if the current branch differs from `source_branch`, glance at `git log --oneline -5` on the branch you're about to leave. A clean tree with no commits ahead of its own upstream is the common, silent case — just switch. A clean tree that's ahead of its upstream, or whose recent commits reference a different ticket key with no relation to this MR's `source_branch`, means the user has real work sitting on that branch that a silent switch would bury from view (it's not lost, just no longer what's in front of them). Name both branches when you switch in that case: *"Switching from `{old-branch}` (ahead of its upstream, ticket `{OLD-KEY}`) to `{source_branch}` for this MR."* One line, not a question — the switch still happens, the user just isn't surprised by it later.
 
 With a clean tree, compare the current branch from Step 1 against `source_branch` (Step 2).
 
@@ -332,7 +349,11 @@ If the user wants only open items, filter to `resolved: false` **after** fetchin
 
 ## Step 5 — Triage Each Comment (investigation only, no edits)
 
-One at a time. Investigate, but change nothing yet:
+Investigate, but change nothing yet. "One at a time" below describes the *investigation checklist per thread*, not a mandate to process threads in serial turns — nothing in this step writes anything, so read as many referenced files as you have threads for in one batch of parallel tool calls, rather than one file per turn. Only serialize when two threads name the same file — read it once, reuse it for both.
+
+Do this yourself, directly, with plain tool calls. Don't dispatch sub-agents for this: reading five or ten files and judging each against the checklist below is exactly the kind of task where a batch of parallel `read_code`/`grep_search` calls already gets you the speed, and a sub-agent adds a coordination step (writing each one a prompt, waiting on it, reading back a summary) without doing the work any faster.
+
+**Speed comes from running the same checks concurrently, not from running fewer of them.** Every item below still applies to every thread.
 
 1. Read the referenced file at the referenced line. Use `grep_search` / `read_code` if the code moved since the comment was posted. **If the file doesn't exist at that path anymore, or the line is out of range for the current file** (renamed, deleted, or moved since the comment was posted), don't silently skip it or guess a new location. Classify it as **✔️ Already addressed** only if you can show a later commit actually moved/removed that code on purpose; otherwise flag it explicitly in the triage report as *"file/line no longer exists — needs a fresh look"* so the user decides whether it still applies.
 2. Check whether a later commit already resolved it.
@@ -462,6 +483,8 @@ Then say nothing more about Jira until Step 8. One line confirming the move is a
 
 ### Then the fixes
 
+**This is the one place in the workflow not to parallelize or delegate, even though Step 5's investigation just was.** Investigation is read-only and forgiving of speed; writing isn't. A sub-agent editing a file at the same time you edit a different one is indistinguishable, from `git diff --cached`'s point of view, from the user editing that file while you work — and the entire hunk-attribution mechanism later in this step exists to catch exactly that shape of problem. Parallel edits from your own dispatched agents would trip your own trap. Apply fixes one at a time, in this process, even when several are independent enough that they *could* run concurrently.
+
 For each approved item:
 
 1. Read the exact code before changing it.
@@ -489,7 +512,9 @@ Keep fixes traceable per comment — don't merge unrelated changes to the same f
 
 The final approval must cover the exact bytes that will be committed. Before the self-review pass:
 
-1. Run and record the narrowest relevant **diagnostics/type check, targeted tests, lint, and smoke test**. Run a build when required by the change; otherwise record `deferred to CI`. A skipped check must include the reason.
+1. Run and record the narrowest relevant **diagnostics/type check, targeted tests, lint, and smoke test**. Run a build when required by the change; otherwise record `deferred to CI`. A skipped check must include the reason. **These are independent commands against the same already-written tree — run them as parallel background processes rather than waiting for each to finish before starting the next.** Diagnostics, tests, and lint don't write files, so nothing about running them concurrently changes what they report. A smoke test that needs a running dev server is the one exception worth a moment's thought — start the server once, then let it serve the others rather than spinning up a second instance.
+
+   **Weigh a full build against what Step 1 already told you about the pre-push hook.** If `gitHooks.prePushContent` runs `nx build`/`ng build` (or an equivalent full build) for the exact project(s) you touched, that build is going to happen again in Step 9 regardless of what you do here — Step 9 can't skip it, only defer *when* it runs. Running the same full production build here too, on top of the one Step 9 is about to run, buys you nothing the second run doesn't already tell you, and it's the difference between one multi-minute build and two on a change that hasn't grown since the first. Prefer the type-check/diagnostics you already ran over a duplicate full build in that case, and say so plainly in the evidence block: `Build: covered by the pre-push hook (runs {command}) — not duplicated here`. Still run your own build here when either is true: no pre-push hook exists, the hook doesn't cover the project(s) you changed, or this is the *first* validation pass for a set of edits that haven't been build-checked at all yet — the point is skipping a redundant *second* full build of the same untouched-since code, not skipping validation.
 2. Stage only the approved MR-review files by name — never `git add .`.
 3. Run the pre-commit staged formatter discovered in Step 1, then re-stage anything it changed.
 4. If formatting changed behavior-relevant bytes, rerun every affected validation check.
@@ -556,7 +581,13 @@ If discovery turns up something relevant, **say what you found and offer to run 
 
 If they say yes, apply only the items relevant to the files you actually touched — a 40-item checklist against a 3-line diff should produce 2–3 relevant checks, not 40 lines of "N/A." If they decline, note that and move on.
 
-**Fold this offer into the Step 8 summary rather than raising it as its own separate pause.** Step 8 is already a hard stop asking "ready to commit and push?" — asking "and should I run this checklist first?" in the same breath is one decision point instead of two and avoids adding another gate.
+**Fold this offer into the Step 8 summary rather than raising it as its own separate pause.** Step 8 is already a hard stop asking "ready to commit and push?" — asking "and should I run this checklist first?" in the same breath is one decision point instead of two and avoids adding another gate. The offer belongs **as the Self-review bullet inside the Step 8 card itself** (see the template below) — not as a free-standing question asked on its own before the card exists.
+
+**A question about the offer is not an answer to it — don't run it off the back of one.** If the user asks *"did you run it?"*, *"what does that checklist say?"*, or anything else that references the offer without actually saying yes, the honest half of the response is admitting it's still unanswered; the dishonest half — which still counts as a violation even when you're truthful about the gate being open — is then running it anyway in the same breath because the topic came up. *"No, you haven't answered that part — let me actually run it now"* is exactly this: correctly naming the gate as open, then closing it yourself one sentence later. Noticing the gate is unresolved is not the same as being told to resolve it. Say the offer is still open and ask directly — *"Want me to run it now?"* — then wait for that answer specifically, the same as any other unanswered gate in this skill.
+
+**Do not ask this as a standalone question and then separately decide it yourself before the card.** Observed failure: the agent asked *"want me to run it against this diff?"* as its own message, then immediately answered that question itself with *"I did a quick pass myself"* — the generic checks from item 3 below, not the named resource — followed by *"let me know if you'd like the full self-review skill run too — otherwise I'll proceed to the summary,"* and then went ahead and rendered the complete `Summary — ready to commit` card in that same turn. The named checklist never ran, and the checklist question was treated as settled ("otherwise I'll proceed") without the user ever answering it. Saying "otherwise I'll proceed" and then proceeding in the same breath is not a pause — it's a rhetorical one.
+
+The fix is not to keep the offer and the card apart — the design explicitly wants them together, in one message, as one gate. The fix is where the offer lives and who answers it: it must appear **as an unresolved line inside the Step 8 card** (per the template's Self-review section below), phrased as an open question, with the card's own single closing question ("Ready to commit and push?") left to cover it. Never pre-empt that by asking the same question separately beforehand, substituting your own informal pass for it, and declaring it resolved before presenting the card. The item-3 generic pass is a baseline you always run regardless of what discovery finds — it is not a substitute for running a *named, discovered* resource, and running it does not let you mark that resource's offer as closed.
 
 #### 3. Always run the generic pass regardless
 
@@ -582,14 +613,15 @@ Before presenting the gate, re-read the verified Jira ticket from Step 2.5. With
 
 ### Preconditions — do not render this gate without them
 
-This summary is the document the user approves. Every number in it must come from a command whose output you have actually seen in this run. Before writing a single line of it, confirm all four:
+This summary is the document the user approves. Every number in it must come from a command whose output you have actually seen in this run. Before writing a single line of it, confirm all five:
 
 1. `git diff --cached` has been run **after** the last staging and formatting operation, and its output is in front of you.
 2. `git diff --cached --numstat` supplied every `+X / -Y` below. None are recalled or estimated.
 3. Every hunk in that diff is attributed to an approved review comment or to a formatter that reported changing that file. Unattributed hunks were raised with the user and settled.
 4. The self-review pass ran against that same diff.
+5. If discovery in the self-review pass named a specific project resource, its offer has not already been asked-and-answered by you in an earlier, separate message. It belongs inside this card as an open bullet — not pre-resolved by an informal pass you ran yourself and described as a stand-in for it.
 
-**If any of these is missing, you are not at Step 8 yet — go back and do it.** Presenting the gate first and verifying afterwards inverts the whole point: the user's "yes" then applies to a description rather than to the change.
+**If any of these is missing, you are not at Step 8 yet — go back and do it.** Presenting the gate first and verifying afterwards inverts the whole point: the user's "yes" then applies to a description rather than to the change. Precondition 5 in particular means you never ask the checklist question as its own message and then treat it as settled — the checklist offer and the rest of this card are one gate, asked together, exactly as the template below renders it.
 
 Once all approved fixes are validated, formatted, staged, and self-reviewed, present this shape — one line per fixed comment, not a paragraph, and every open item called out separately so nothing needing the user's attention gets buried:
 
@@ -623,7 +655,7 @@ Once all approved fixes are validated, formatted, staged, and self-reviewed, pre
 - Targeted tests: {command + result / not applicable + why}
 - Lint: {command + result}
 - Smoke test: {result / not applicable}
-- Build: {result / deferred to CI}
+- Build: {result / deferred to CI / covered by the pre-push hook — not duplicated here}
 
 **Jira after replies**
 - Ticket: `{TICKET-KEY}` — currently **{current status}**
@@ -753,7 +785,7 @@ A reply is a full sentence, so don't put it in a table cell — a cell truncates
 
 **1. `_banner.scss:17`**
 
-→ "Fixed — switched to the directional radius mixin. See latest commit."
+→ "Switched to the directional radius mixin. See the latest commit."
 
 ---
 
@@ -762,7 +794,22 @@ Post these replies and resolve the threads? (yes / edit #N / skip)
 
 **STOP until the user approves.** They may approve all, edit a specific reply, or skip some — don't post or resolve anything skipped.
 
+### Write replies like a person, not a template
+
+**A reviewer reading six replies in a row will notice if all six open the same way.** The most common tell is starting every reply with a word or two, a dash, and the fix (`Fixed — did X`, `Renamed — did Y`, `Added — did Z`). One reply like that reads fine; six in the same thread read like a script, and a human reviewer clocks it immediately as generated text rather than someone actually addressing their comment.
+
+Write each reply as an ordinary sentence someone would type after actually making the change — plain punctuation, no dash-led fragment, varied openings:
+
+- "Switched to `canOpenExternally()` so a missing or malformed URL both fall through to the modal now."
+- "Good catch. This was already in `biometric.service.ts`, so I reused the same constants."
+- "Renamed to `onCampaignClick`, matching what you suggested in the comment."
+- "This one's already handled: `a3bbad5b` fixed it before this review pass, no further change needed here."
+
+Vary the opening across replies in the same batch — not every one needs "Fixed," and not every one needs to restate what the comment asked for before answering it. If a reply genuinely has two distinct clauses that need separating, use a comma or a period and a new sentence, not a dash. Say what changed in plain terms; skip "See latest commit" as a fixed sign-off on every single one — it's fine occasionally, redundant when it's the last line of all six.
+
 ### Reply on the thread
+
+**Post replies to independent threads as parallel tool calls, not one per turn.** Each `POST` targets a different `discussion_id` and none of them depend on another thread's reply landing first, so there's no correctness reason to serialize them. Keep the publication ledger updated per call regardless of whether they ran in parallel or in sequence — the ledger is what makes partial failure recoverable, not the ordering of the calls.
 
 Use the discussion `id` captured in Step 4. Replies must be **threaded under the reviewer's comment**, never posted as a general MR comment:
 
@@ -771,18 +818,18 @@ mcp_gitlab_glab_api
   args:  ["projects/{project_path_encoded}/merge_requests/{iid}/discussions/{discussion_id}/notes"]
   flags: {
     "method": "POST",
-    "field": ["body=Fixed — {what changed}. See latest commit."],
+    "field": ["body={the reply, written per the section above}"],
     "hostname": "{host}"
   }
 ```
 
 For **Question** or **Disagree** items, never reply with a fix confirmation. Post the user's answer or approved reasoning instead.
 
-For **✔️ Already addressed** items, reply and resolve the same as a Fix — but say what already handled it (e.g. "Already fixed in `a3bbad5b` before this review pass — no further change needed.") rather than describing a change you just made.
+For **✔️ Already addressed** items, reply and resolve the same as a Fix — but say what already handled it (e.g. "This was already fixed in `a3bbad5b` before this review pass, so nothing further is needed here.") rather than describing a change you just made.
 
 ### Resolve
 
-Immediately after replying, in the same pass, resolve every thread you replied to on behalf of a **Fix**, **Nitpick**, or **Already addressed** item:
+Immediately after replying, in the same pass, resolve every thread you replied to on behalf of a **Fix**, **Nitpick**, or **Already addressed** item. **The resolve for a given thread must wait for that thread's own reply to succeed first** — resolving before the reply lands would close a thread with no explanation attached. Across *different* threads there's no such dependency, so once each thread's reply has landed, its resolve call can run in parallel with every other thread's resolve call:
 
 ```
 mcp_gitlab_glab_api
@@ -832,13 +879,15 @@ For an approved automated transition, and only when the publication precondition
 4. Call `transitionJiraIssue`, then re-read the issue and verify the resulting exact status. A successful API response without the expected resulting status is not sufficient evidence.
 5. Report transition failures as failures; never claim Jira is back in review when it is not.
 
-In manual Jira mode, and only when publication succeeded, show the verified ticket URL and exact review target approved in Step 8, ask the user to apply that transition, and wait for their confirmation of the resulting exact status. Do not mark the lifecycle complete from an instruction alone.
+**Do not report this success as its own message.** Hold the confirmed resulting status and say it for the first time in the combined time-log line below — that's the whole reason the template folds them together. Observed failure: the agent said *"Jira `{TICKET-KEY}` is now TO REVIEW (verified via re-read after the transition call)"* as a complete message on its own, then followed up afterward with *"Pushed, threads resolved, and Jira `{TICKET-KEY}` is now TO REVIEW... how much time should I log?"* — the same fact stated twice, in two turns, for a decision the template already says fits in one. A successful transition isn't a stop; it's a fact you're carrying forward one line, not a milestone worth announcing on its own.
+
+In manual Jira mode, and only when publication succeeded, show the verified ticket URL and exact review target approved in Step 8 and ask the user to apply that transition — **in the same message as the time-log question**, not before it. They can hand back both the resulting status and the logged duration in a single reply; there's no dependency that forces two round trips. Do not mark the lifecycle complete from an instruction alone; if the reply confirms the transition but leaves time unanswered, treat time as still open and the transition as settled — don't ask the time question a second time just because it arrived bundled with something else.
 
 ### Ask for time spent last, then log it
 
 **This is the final question in the workflow.** It comes after the commit was pushed, after every approved reply and resolution was published, and after the review transition was applied or explicitly left unchanged — the point where the user can actually see what the pass cost. Never ask earlier in the run.
 
-Ask once, in one line, with the outcome as context, then 🛑 wait:
+Ask once, in one line, with the outcome as context, then 🛑 wait. **This line is the first time the resulting Jira status appears anywhere in the conversation** — not a recap of something you already told the user a message ago:
 
 > Pushed, threads resolved, and Jira `{TICKET-KEY}` is now **{resulting status}**. How much time should I log against it? (`1h`, `30m`, `2h 30m` — or skip)
 
@@ -1063,31 +1112,33 @@ This affects `/discussions`, `/notes`, `/projects`, and every other collection. 
 | Step | Action |
 | --- | --- |
 | **Output discipline** | **Steps 0–5 run quietly, with no gate and no interruption. Never narrate power activation, parsed URL fields, the project profile, tool choice, step numbers, or checks that passed — including "Jira is already In Progress". Surface only blockers, one-line flags, and the defined gates. Exactly one line before the report, and make it the count: *"Found {N} reviewer comments across {M} threads ({notes} notes, reconciles ✓). Reading the referenced files now."*** |
-| **Batch the reads** | Steps 2, 2.5 and 4 are independent reads — issue them together instead of serially. Check out the branch (Step 3) only after the zero-comment check, so a dead-end run never touches the working tree. First user-facing output is the triage report |
+| **Batch the reads** | Step 1's profiling reads are all independent — issue as parallel tool calls. `iid` comes from the URL (Step 0), so Steps 2 and 4 don't depend on each other either — fire the MR fetch, Jira identity resolution, and discussions fetch together, serializing only when Jira identity genuinely needs the MR title first (no ticket key in the URL). Check out the branch (Step 3) only after the zero-comment check, so a dead-end run never touches the working tree. First user-facing output is the triage report |
 | Parse URL | Split on `/-/` → `host`, `project_path` (encode `/` → `%2F`), `iid`, optional `note_id`. Malformed/non-GitLab URL → stop and ask, don't guess |
 | Profile | Derive directly from lockfile, `package.json`, `.husky/`, `git log`, `git status` — no external tool, no other power |
 | Host guard | Git host isn't GitLab → stop, tell the user, don't improvise `gh` |
 | Fetch MR | `glab_api` → `.../merge_requests/{iid}` → `source_branch`, title, type, `user_notes_count`, Jira-key/link evidence. No ticket key in title → do not guess; Step 2.5 reconciles all sources |
 | **Sanity check** | Compare the MR's project against the workspace remote and author/assignees against the current user. Wrong project stops; ownership mismatch is flagged |
 | **Jira verify (silent)** | **Reconcile one key + site and verify the issue quietly, batched with the MR fetch. Terminal/blocked/unidentifiable → stop now. `To Do`/`To Review` → resolve the exact target and carry it to Step 6; say nothing. Already active → say nothing at all. No active transition reachable → record the reachable `to.name` set for Step 6. Never call the current status "active-equivalent" to skip the question. No writes in this step** |
-| Branch | Compare to the current branch from Step 1; check the dirty-tree status before switching |
+| Branch | Compare to the current branch from Step 1; check the dirty-tree status before switching. Clean but ahead of its upstream, or on an unrelated ticket → name both branches when switching, don't switch silently |
 | Fetch comments | `glab_api` → `.../discussions` with `output: ndjson`; drop `system: true`; **reconcile `notes_total` vs `user_notes_count`**. Carry `threads_total` and `reviewer_notes` separately — the report counts threads, the reconciliation counts notes, and your own prior replies are neither. Zero comments → stop, ask, don't produce an empty triage report |
 | Triage | Classify each, verify reviewer-named APIs in `node_modules`, check cross-comment interactions, check against conventions relevant to the file actually edited, cross-check against this skill's own `review-feedback-patterns.md` if it exists — no edits. Referenced file/line no longer exists → flag explicitly, don't skip silently |
+| **Speed** | **Read-only steps (1's profiling, 5's per-thread file reads) parallelize freely as plain batched tool calls — no sub-agents needed for this. Validation commands in Step 7 (diagnostics/tests/lint/smoke) run concurrently too, but skip a full build there when the pre-push hook is about to build the same project(s) anyway — one duplicate multi-minute build buys nothing. Step 7's actual edits stay single-threaded, one at a time, in this process — a concurrent edit is indistinguishable from the untracked parallel-edit problem the hunk-attribution check exists to catch** |
 | **Report** | **Full triage report (including general MR-level comments), wait for go-ahead — hard stop.** Header is two lines: `{X}+{Y}` must equal `threads_total`, and the `user_notes_count` tick sits on the notes line. Footer carries the Jira transition question when one is needed — omit it entirely when the ticket is already active. A bare "go ahead" approves code, not the board |
 | **Jira apply** | Step 7, before the first edit: apply the approved transition, re-read to verify the exact resulting status, stop on failure. Declined or unavailable → record it and stay quiet |
 | **New scope (6b)** | **A 💬/⚠️ item the user answers is new scope. Line-or-two → proceed, saying what you'll change. New file, new service, new injection, layer change, or files no reviewer touched → present and wait. Offer "reply without a code change" as a real option. A plan followed by an edit in the same turn is not a gate** |
 | Fix | One at a time; lint via `lint:{project}` script → `nx lint {project}` → generic `lint`, narrowest scope that covers the change. Self-review pass at the end: discover review resources by reading their **descriptions**, never by matching filenames; offer what you found rather than silently applying it; always run the generic diff scan regardless. Disclosed in the Step 8 summary, with the offer folded into that same gate |
 | **Attribute the diff** | **`git add {file}` stages the whole file, including the user's parallel edits — `git status` cannot see this. After staging and formatting, read `git diff --cached` in full and map every hunk to an approved comment or to a formatter that reported changing that file. Unattributable hunk → stop and ask whose it is. Never guess a formatter/plugin as the cause** |
-| **Summary** | **Validate, stage by name, format, re-stage, self-review `git diff --cached`, then show summary + evidence + commit message + exact Jira review target. Do not render the gate without the diff, `--numstat` counts, hunk attribution, and the self-review pass — all four. `+X/-Y` from `--numstat`, never from memory. Staged / Self-review / Jira always appear; Jira is a question, not a status line. Wait for independent commit and Jira approvals; later mutations loop back** |
+| **Summary** | **Validate, stage by name, format, re-stage, self-review `git diff --cached`, then show summary + evidence + commit message + exact Jira review target. Do not render the gate without the diff, `--numstat` counts, hunk attribution, the self-review pass, and a still-open discovered-checklist offer never pre-answered by you — all five. `+X/-Y` from `--numstat`, never from memory. Staged / Self-review / Jira always appear; Jira is a question, not a status line. Wait for independent commit and Jira approvals; later mutations loop back** |
 | Commit | Re-check that `git diff --cached` matches the approved set, then commit — no staging or formatting after approval; terminal git, not MCP tools. After committing, read the hook's output **and** compare `git show --numstat HEAD` against the approved counts; divergence stops the push |
 | **Pre-push** | **If the hook runs builds, present (a)/(b)/(c) and wait — hard stop. Never pick `--no-verify` yourself.** Present (a) as the default with an explicit 30-min timeout and a duration estimate; don't predict a timeout |
 | Push | `git push`, or `git push --no-verify` per the user's answer. Divergence → fetch, show ahead/behind, stop for an explicit reconciliation choice and renewed review; never merge/rebase/force implicitly |
 | **Replies** | **Preview replies, wait for approval — hard stop.** Then reply inline and resolve per approved thread. Track reply note IDs and resolution state; on partial failure re-fetch discussions, reconcile remote state, and retry only missing actions — never repost an existing reply |
+| **Write like a person** | **Plain sentences for anything posted to GitLab or Jira — no `Fixed — did X` dash-led template repeated across a batch of replies. Vary how each reply opens; a reviewer reading six in a row notices a script** |
 | **Jira after replies** | Only after a successful push plus every approved reply/resolution: re-read the verified ticket. If separately approved and still active, transition by exact `to.name` to the Step 8 review target and verify. Publication failure leaves Jira active |
-| **Time log (last)** | **Ask for time spent only here — after push, replies, resolutions, and the status change — then log the confirmed duration. Include the ticket's `timetracking` figures (estimate / logged / remaining) in the ask; this is the one place Step 2.5 fetched them for. Never ask at Step 8, never infer it, and still ask when earlier stages failed** |
+| **Time log (last)** | **Ask for time spent only here — after push, replies, resolutions, and the status change — then log the confirmed duration. Include the ticket's `timetracking` figures (estimate / logged / remaining) in the ask; this is the one place Step 2.5 fetched them for. Never ask at Step 8, never infer it, and still ask when earlier stages failed. Don't announce the resulting Jira status as its own message first — this line is its first appearance, folded in with the time question, not a recap** |
 | **Lessons** | **Optional follow-up only. Patterns that would apply again; skip one-offs and lint-enforced items. Eligible items include Question/Disagree that became real fixes. `×N` count, append/deduplicate `[sources: MR !N note M; ...]`, promote to top at ×3. A rule with no `[sources:]` cannot be bumped — offer backfill vs count-as-new and ask. Approval covers the previewed lines only; frontmatter/`inclusion` changes need their own separate question. If accepted, preview and wait — hard stop** |
 | **Stop** | **Do not merge, approve, delete branch, or set Jira Done. The reviewer decides.** |
-| Never (process) | Commit or push without approval, post replies without previewing, skip the report, skip the self-review pass, edit before approval, start implementing an answered Question in the same turn you plan it, guess answers to reviewer questions, reply as a general MR comment instead of inline, resolve silently, force-push without asking, merge or approve the MR, escalate to `--no-verify` when the user's chosen option fails |
+| Never (process) | Commit or push without approval, post replies without previewing, skip the report, skip the self-review pass, edit before approval, start implementing an answered Question in the same turn you plan it, guess answers to reviewer questions, reply as a general MR comment instead of inline, resolve silently, force-push without asking, merge or approve the MR, escalate to `--no-verify` when the user's chosen option fails, dispatch a sub-agent (or otherwise parallelize) to make an actual code edit in Step 7 |
 | Never (unverified claims) | Report `+X/-Y` from memory instead of `--numstat`; treat `git status --short` or `Exit Code: 0` as evidence about file contents; commit a file you haven't diffed; attribute a hunk to a formatter whose output says it changed nothing; call a status "active-equivalent" on the strength of `statusCategory`; bump a `×N` you cannot verify from `[sources:]`. When you can't account for something, ask — the user is the cheapest source of truth about their own tree |
 | Never (tooling) | Use `glab_mr_view`/`glab_mr_note` (always fail — use `glab_api`), omit `ndjson` on list endpoints, triage only the URL's `note_id`, use git MCP tools (`git_add`/`git_commit`) when hooks exist — use terminal commands, or dispute a reviewer-named API without searching the dependency tree |
 | Never (hardcode) | Host, project path, package manager, lint command, branch name, commit format, Jira site, Jira active/review status names, ticket prefix — all derived in Steps 0–2.5 |
