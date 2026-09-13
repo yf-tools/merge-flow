@@ -333,10 +333,56 @@ function testWorkflowPolicyContracts() {
   truthy("workflow: fetches before creating tracking branch", checkoutFetch >= 0 && checkoutFetch < checkoutCreate);
 }
 
+/**
+ * Regression test for the fabrication-shape bug: a discovered self-review
+ * checklist reported as a completed result ("no BEM violations", "checked
+ * against X") instead of the open question the template requires. This
+ * doesn't prove the agent won't fabricate at runtime — prose can't guarantee
+ * that — but it does mechanically catch someone editing the *template itself*
+ * back into a non-question, completed-result shape without noticing.
+ */
+function testSelfReviewTemplateShape() {
+  const skill = readFileSync(join(ROOT, "skills", "mr-comments", "SKILL.md"), "utf8");
+
+  const bulletMarker = "{Found `{path}`";
+  const bulletStart = skill.indexOf(bulletMarker);
+  truthy("self-review template: Self-review bullet placeholder is present", bulletStart >= 0);
+  if (bulletStart < 0) return;
+
+  // Pull just that one bulleted line out of the template block.
+  const lineEnd = skill.indexOf("\n", bulletStart);
+  const bullet = skill.slice(bulletStart, lineEnd);
+
+  truthy("self-review template: bullet offers both a found-resource and a nothing-found branch", bullet.includes(" / "));
+
+  const [foundBranch, nothingBranch] = bullet.split(" / ");
+  truthy("self-review template: found-resource branch ends in a question mark", /\?\}?\s*$/.test(foundBranch.trim()));
+  truthy("self-review template: nothing-found branch ends in a question mark", /\?\}?\s*$/.test(nothingBranch.trim()));
+
+  // The template placeholder must never itself read like a completed result —
+  // that's the exact shape of the observed fabrication ("no BEM violations",
+  // "checked against X, no issues found") that skipped the open question.
+  const fabricationPhrases = [
+    "no issues found",
+    "no new issues",
+    "checked against",
+    "no violations",
+    "consistent with",
+    "all consistent",
+  ];
+  for (const phrase of fabricationPhrases) {
+    truthy(
+      `self-review template: bullet placeholder doesn't contain a completed-result phrase ("${phrase}")`,
+      !bullet.toLowerCase().includes(phrase),
+    );
+  }
+}
+
 // ---------- Runner ----------
 
 const suites = [
   ["workflow policy contracts", testWorkflowPolicyContracts],
+  ["self-review template shape", testSelfReviewTemplateShape],
   ["plugin.json manifest", testPluginManifest],
   ["skill frontmatter", testSkillFrontmatter],
   ["declared files exist", testDeclaredFilesExist],

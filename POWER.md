@@ -12,10 +12,10 @@ keywords:
     "merge-request-url",
     "reviewer-feedback",
     "resolve-threads",
-    "note_",
+    "note",
     "review-workflow",
   ]
-author: "Youssef Fathallah"
+author: "Youssef Fathalla"
 ---
 
 ## What this power does
