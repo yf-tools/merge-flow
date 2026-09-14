@@ -4,7 +4,7 @@
   "version": "1.3.0",
   "description": "ACTIVATE THIS POWER for a full GitLab merge request URL or requests to handle MR feedback. Verifies the linked Jira ticket and active status before checkout, then triages, fixes, validates, commits, pushes, replies inline, resolves, returns Jira to review with approval, and optionally logs time. GitLab only; without Atlassian tools, exact Jira identity and status require manual confirmation.",
   "author": {
-    "name": "Youssef Fathallah"
+    "name": "Youssef Fathalla"
   },
   "repository": "https://github.com/yf-tools/gitlab-mr-review",
   "license": "MIT",
@@ -17,7 +17,7 @@
     "merge-request-url",
     "reviewer-feedback",
     "resolve-threads",
-    "note_",
+    "note",
     "review-workflow"
   ]
 }

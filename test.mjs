@@ -333,6 +333,35 @@ function testWorkflowPolicyContracts() {
   truthy("workflow: fetches before creating tracking branch", checkoutFetch >= 0 && checkoutFetch < checkoutCreate);
 }
 
+/** Pull the keyword flow-sequence out of a POWER.md frontmatter block. */
+function powerKeywords(text) {
+  const m = text.match(/^keywords:\s*\[([\s\S]*?)\]/m);
+  if (!m) return null;
+  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+}
+
+/**
+ * POWER.md's frontmatter and plugin.json each carry a keyword list, by hand,
+ * describing the same thing. Two hand-maintained copies of one fact is the
+ * drift shape this suite exists to catch: a keyword edited in one file and not
+ * the other changes activation behaviour without failing anything. Observed —
+ * a trailing-underscore cleanup landed in POWER.md while plugin.json kept the
+ * old spelling.
+ */
+function testKeywordParity() {
+  const power = readFileSync(join(ROOT, "POWER.md"), "utf8");
+  const manifest = JSON.parse(readFileSync(join(ROOT, "plugin.json"), "utf8")).keywords;
+  const declared = powerKeywords(power);
+
+  truthy("keywords: POWER.md declares a keyword list", Array.isArray(declared) && declared.length > 0);
+  truthy("keywords: plugin.json declares a keyword list", Array.isArray(manifest) && manifest.length > 0);
+  if (!declared || !manifest) return;
+
+  eq("keywords: POWER.md and plugin.json list the same keywords", [...declared].sort(), [...manifest].sort());
+  eq("keywords: POWER.md has no duplicates", declared.length, new Set(declared).size);
+  eq("keywords: plugin.json has no duplicates", manifest.length, new Set(manifest).size);
+}
+
 /**
  * Regression test for the fabrication-shape bug: a discovered self-review
  * checklist reported as a completed result ("no BEM violations", "checked
@@ -383,6 +412,7 @@ function testSelfReviewTemplateShape() {
 const suites = [
   ["workflow policy contracts", testWorkflowPolicyContracts],
   ["self-review template shape", testSelfReviewTemplateShape],
+  ["keyword parity", testKeywordParity],
   ["plugin.json manifest", testPluginManifest],
   ["skill frontmatter", testSkillFrontmatter],
   ["declared files exist", testDeclaredFilesExist],
