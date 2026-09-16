@@ -324,7 +324,7 @@ function testSkillFrontmatter() {
 
 /** Every path a caller might expect (README, POWER.md links) must resolve. */
 function testDeclaredFilesExist() {
-  for (const f of ["LICENSE", "README.md", "POWER.md", "plugin.json", "mcp.json"]) {
+  for (const f of ["LICENSE", "README.md", "POWER.md", "plugin.json", "mcp.json", "preflight.mjs"]) {
     truthy(`layout: ${f} exists at package root`, existsSync(join(ROOT, f)));
   }
   truthy("layout: skills/mr-comments/SKILL.md exists", existsSync(join(ROOT, "skills", "mr-comments", "SKILL.md")));
@@ -599,6 +599,81 @@ function testWorkflowPolicyContracts() {
   assertLaneOrdering(docs, marks);
   assertReportTemplateShape(docs);
   assertBatchPlanShape(docs, marks);
+  assertPortableCommands(docs);
+}
+
+/**
+ * Cross-platform portability of every prescribed command.
+ *
+ * This ships to testers who are not all on Windows, and three prescribed commands were
+ * PowerShell-only. One of them was the only documented way to see which files actually
+ * conflict, so the conflict lane broke outright on macOS with nothing to say why.
+ *
+ * The tool name was the subtler half. `execute_pwsh` is what one environment calls its
+ * terminal tool, and naming it pins the instruction to that environment when what the
+ * rule actually depends on is a tool that streams output and accepts a timeout — see
+ * publishing.md's "Use terminal commands, not git MCP tools" for why those two
+ * properties, and not the shell, are the point.
+ */
+function assertPortableCommands(docs) {
+  const { skill, refs } = docs;
+  const files = [{ name: "SKILL.md", text: skill }, ...refs];
+
+  const CMDLETS = /Out-File|Select-String|ConvertFrom-Json|ConvertTo-Json|Select-Object|Get-Content|\$env:/;
+
+  /**
+   * Fenced blocks, by walking lines rather than matching pairs.
+   *
+   * The obvious form, ```` /```(\S*)\r?\n([\s\S]*?)```/g ````, is a `slow-regex` finding:
+   * a backtick is not whitespace, so `\S*` swallows every later fence marker and then
+   * backtracks looking for the newline that follows the language tag. A line walk is
+   * linear by construction and needs no reasoning about whether the input is hostile.
+   */
+  const fences = (text) => {
+    const out = [];
+    let open = null;
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.startsWith("```")) {
+        if (open) open.lines.push(line);
+      } else if (open) {
+        out.push({ lang: open.lang, body: open.lines.join("\n") });
+        open = null;
+      } else {
+        open = { lang: line.slice(3).trim(), lines: [] };
+      }
+    }
+    return out;
+  };
+
+  for (const f of files) {
+    const blocks = fences(f.text);
+    const shellSpecific = blocks.filter((b) => b.lang === "powershell" || CMDLETS.test(b.body));
+
+    // An environment-specific tool name inside an instruction is the same defect as a
+    // shell-specific command: it names what one machine happens to have.
+    falsy(`portable[${f.name}]: names no environment-specific terminal tool`, f.text.includes("execute_pwsh"));
+
+    // The resident file is read on every run on every machine, so keep it shell-neutral.
+    if (f.name === "SKILL.md") {
+      eq(`portable[${f.name}]: carries no shell-specific command block`, shellSpecific.length, 0);
+      continue;
+    }
+    if (shellSpecific.length === 0) continue;
+
+    // A PowerShell recipe is fine, but only standing next to one a POSIX shell can run.
+    const posix = blocks.filter((b) => (b.lang === "bash" || b.lang === "sh") && !CMDLETS.test(b.body));
+    truthy(`portable[${f.name}]: its PowerShell recipe is paired with a POSIX one`, posix.length > 0);
+  }
+
+  // Dropping the tool name is only safe if the rule states what it actually relies on.
+  const gitRule = [skill, refs.find((r) => r.name === "publishing.md")?.text ?? ""].join("\n");
+  truthy("portable: the git-over-terminal rule gives streaming as a reason", /stream/i.test(gitRule));
+  truthy("portable: and a timeout it can set", /timeout/i.test(gitRule));
+
+  // `node` is already a hard requirement, which makes it the one filter present on every
+  // tester's machine — unlike `jq`, and unlike any shell's own JSON cmdlets.
+  const tooling = refs.find((r) => r.name === "glab-tooling.md")?.text ?? "";
+  truthy("portable[glab-tooling.md]: the response filter runs through node", tooling.includes("node -e"));
 }
 
 /**
@@ -3078,6 +3153,95 @@ function testGitContextScript() {
   truthy("git-context: and says why on stderr", outside.stderr.includes("not a git repository"));
 }
 
+/**
+ * The setup check, and specifically the two bugs it shipped with before it worked.
+ *
+ * 1. `execFileSync` returns stdout on success and only reveals stderr by throwing, so
+ *    `glab auth status` — which writes everything to stderr and exits 0 — came back
+ *    empty and the check told an authenticated machine to run `glab auth login`. A
+ *    diagnostic that reports a false failure is worse than no diagnostic.
+ * 2. Em dashes in the emitted strings rendered as mojibake in the Windows console, on
+ *    the very platform most of the first testers are on.
+ *
+ * It lives at the package root rather than under `skills/mr-comments/scripts/` because a
+ * test pins that directory to exactly the two scripts the agent runs mid-workflow, and
+ * because this is a setup tool a person runs by hand.
+ */
+function testPreflight() {
+  const path = join(ROOT, "preflight.mjs");
+  const src = readFileSync(path, "utf8");
+
+  truthy("preflight: has a shebang so it can be executed directly", src.startsWith("#!/usr/bin/env node"));
+  falsy("preflight: imports nothing outside node:", /from\s+["'](?!node:)[^."']/.test(src));
+
+  // Bug 2. Every byte reaches a terminal whose encoding is not ours to choose.
+  const nonAscii = src.match(/[^\x00-\x7F]/g) ?? [];
+  eq(`preflight: output is pure ASCII (${nonAscii.length} non-ASCII bytes)`, nonAscii.length, 0);
+
+  // Bug 1. `spawnSync` exposes both streams regardless of exit code; `execFileSync` does not.
+  truthy("preflight: captures both streams with spawnSync", src.includes("spawnSync(bin, args"));
+  falsy(
+    "preflight: does not capture command output with execFileSync",
+    /import \{[^}]*execFileSync/.test(src),
+  );
+  truthy(
+    "preflight: records why, so the stderr-only case is not reintroduced",
+    src.includes("writing everything to stderr comes back empty"),
+  );
+
+  // Same untrusted-search-path discipline as the two scripts. Deliberately NOT asserted
+  // as byte-identical to their `resolveBin`: this one must report a bad env pin alongside
+  // every other finding instead of exiting on it, which is why it is separate code.
+  falsy("preflight: never spawns a bare command name", /(?:execFileSync|spawnSync)\(\s*["'`]/.test(src));
+  truthy("preflight: skips non-absolute PATH entries", src.includes("if (!dir || !isAbsolute(dir))"));
+  truthy("preflight: applies PATHEXT on Windows", src.includes("PATHEXT"));
+  truthy("preflight: explains why it is not a third copy of resolveBin", src.includes("rather than a third copy"));
+
+  // Behavioural, and machine-independent: assert the SHAPE, never that the checks pass.
+  // A box without glab must still run this suite green.
+  const r = spawnSync(process.execPath, [path, "--json", "--repo", ROOT], { encoding: "utf8", timeout: 120_000 });
+  truthy(`preflight: exits 0 or 1, never a crash (got ${r.status})`, r.status === 0 || r.status === 1);
+
+  let report = null;
+  try {
+    report = JSON.parse(String(r.stdout ?? ""));
+  } catch {
+    report = null;
+  }
+  truthy("preflight: --json emits parsable JSON", report !== null);
+  if (!report) return;
+
+  eq(
+    "preflight: --json carries the documented top-level keys",
+    Object.keys(report).sort(byCodeUnit),
+    ["checks", "failed", "node", "platform", "repo"],
+  );
+  truthy("preflight: reports at least the required checks", report.checks.length >= 8);
+  const STATUSES = ["fail", "info", "ok", "warn"];
+  for (const c of report.checks) {
+    truthy(`preflight[${c.name}]: has a group`, typeof c.group === "string" && c.group.length > 0);
+    truthy(`preflight[${c.name}]: has a known status`, STATUSES.includes(c.status));
+    truthy(`preflight[${c.name}]: has a detail string`, typeof c.detail === "string");
+  }
+  // `failed` drives the exit code, so the two must agree or the exit code is decoration.
+  eq(
+    "preflight: failed count matches the fail-status checks",
+    report.failed,
+    report.checks.filter((c) => c.status === "fail").length,
+  );
+  eq("preflight: exit code follows the failed count", r.status, report.failed === 0 ? 0 : 1);
+
+  // Every check that can fail has to say what the failure costs, or a tester learns
+  // nothing they could not have guessed from the name.
+  const named = report.checks.map((c) => c.name);
+  for (const required of ["node", "git", "glab", "glab auth", "mr-review-checks", "git-context.mjs", "fetch-mr.mjs"]) {
+    truthy(`preflight: checks ${required}`, named.includes(required));
+  }
+
+  // And it has to be discoverable, or nobody runs it.
+  truthy("preflight: the README tells a tester to run it", readFileSync(join(ROOT, "README.md"), "utf8").includes("node preflight.mjs"));
+}
+
 // ---------- Runner ----------
 
 const suites = [
@@ -3085,6 +3249,7 @@ const suites = [
   ["local triage parity", testLocalTriageParity],
   ["executable resolution", testExecutableResolution],
   ["git-context script behaviour", testGitContextScript],
+  ["preflight setup check", testPreflight],
   ["workflow policy contracts", testWorkflowPolicyContracts],
   ["progressive disclosure", testProgressiveDisclosure],
   ["self-review template shape", testSelfReviewTemplateShape],

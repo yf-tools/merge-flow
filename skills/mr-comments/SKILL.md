@@ -236,7 +236,7 @@ Everything after the go-ahead is on a clock the user is watching, and what they 
 
 **Bound the API verification in Step 6 to a couple of reads.** If confirming a reviewer's claim about a library needs more than that — chasing generated type metadata, tracing an injectable's provider chain through a bundled `.d.ts`, reverse-engineering a build artifact — **stop and raise it as a Step 6b finding**, with what you checked and what remains open. *"Reviewer claims X; I couldn't confirm it from the published types in two reads — worth checking before we act"* is useful and honest. Six minutes of type archaeology is not, and it lands in the same place either way.
 
-**Two escalations of the same question is the cap, not two of each tool.** When `grep_search` comes back empty, the tempting move is `file_search`, then a shell `Select-String`, then a narrower glob, then `-Context 3,3` — five tools failing on one question. Three tools failing the same way *is* the answer: the symbol isn't reachable that way. Take the cheap path once (a package's `types`/`typings` entry point from its `package.json`, then one grep inside that file) and if it doesn't land, the item is unverified.
+**Two escalations of the same question is the cap, not two of each tool.** When `grep_search` comes back empty, the tempting move is `file_search`, then a shell text search, then a narrower glob, then the same search again with surrounding context — five tools failing on one question. Three tools failing the same way *is* the answer: the symbol isn't reachable that way. Take the cheap path once (a package's `types`/`typings` entry point from its `package.json`, then one grep inside that file) and if it doesn't land, the item is unverified.
 
 **Never read compiler-mangled internals.** Angular's `ɵprov` / `ɵfac` / `ɵɵInjectableDeclaration` markers inside a generated `.d.ts`, bundled build artifacts, minified output — the answer is not worth the reading, and "unverified, here's what I checked" is the correct result. This has cost six minutes and thirty-odd calls once, and ten calls again with the rule already in front of the run.
 
@@ -503,7 +503,7 @@ Report all three in the Step 8 summary: what was found and whether it was run, o
 
 **If this run resolved a conflict, re-read the MR payload after the push** and report `has_conflicts` from that read. `checking`/`unchecked` is pending, not cleared. `references/conflicts.md` has the three outcomes.
 
-**Run git through `execute_pwsh`, never `mcp_git_git_add`/`mcp_git_git_commit`.** Hooks fire either way, but through an MCP tool there's no visible output, no timeout and no TTY — a stalled hook is indistinguishable from a crash, and `git_commit` has been observed hanging indefinitely on a staged formatter with nothing shown.
+**Run git as a terminal command, never through `mcp_git_git_add`/`mcp_git_git_commit`.** Use whichever terminal tool your environment exposes; what the rule needs from it is that it **streams output live and takes a timeout you set**, which is why the tool is named nowhere here. Hooks fire either way, but through an MCP tool there's no visible output, no timeout and no TTY — a stalled hook is indistinguishable from a crash, and `git_commit` has been observed hanging indefinitely on a staged formatter with nothing shown.
 
 ## Step 10 — Reply Inline and Resolve Each Thread
 

@@ -69,6 +69,14 @@ When an MR has conflicts (Step 2) and you need to know _which_ files actually co
 
 So `^<<<<<<<` matches nothing. There is also **no `CONFLICT:` line** in this three-argument form — those come from the newer `--write-tree` mode, which in turn doesn't print these per-file sections, so don't mix patterns from the two. Because the output is long, write it to a file rather than fighting a pager or a truncated pipe:
 
+```bash
+base=$(git merge-base HEAD origin/{TARGET})
+git merge-tree "$base" HEAD origin/{TARGET} > /tmp/mt.txt 2>&1
+grep -n '<<<<<<<' /tmp/mt.txt
+```
+
+The same three steps in PowerShell, since no text-search primitive is common to both shells:
+
 ```powershell
 $base = git merge-base HEAD origin/{TARGET}
 git merge-tree $base HEAD origin/{TARGET} 2>&1 | Out-File -FilePath "$env:TEMP\mt.txt" -Encoding utf8

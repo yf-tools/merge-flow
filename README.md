@@ -143,8 +143,35 @@ pure functions over data already fetched — no filesystem, no network — so
 choosing **Always allow** is safe and saves the run waiting on you mid-flow.
 On a first run, those prompts are most of the delay before the report appears.
 
+## Check your setup before the first MR
+
+```bash
+node preflight.mjs --repo /path/to/your/project
+```
+
+Every prerequisite below fails quietly and plausibly, and each one looks like a bug in
+the power rather than a gap in the setup. A stale MCP server keeps serving the previous
+tool list, so a fix appears not to have landed. `glab` installed but not authenticated
+fails at the first API call, several steps into a run. No Atlassian server means the
+workflow correctly refuses to fake a Jira check and stops to ask by hand, which reads as
+broken. Preflight turns each of those into a named finding with the cost spelled out.
+
+It writes nothing, mutates no git state, and makes no network call beyond
+`glab auth status`. It exits 0 when nothing is blocking and 1 otherwise, and `--json`
+gives the same report as structured data.
+
+Two things it deliberately does not claim to check, because they live in the editor
+rather than on disk: whether Kiro has actually connected to the bundled server, and
+whether you have accepted the tool prompts. Both are printed as reminders instead.
+
 ## Requirements
 
+- Windows, macOS or Linux. No prescribed command is tied to one shell: the workflow
+  names no terminal tool (it states the two properties it needs from one, streaming
+  output and a settable timeout, and lets you use whichever your environment exposes),
+  response filtering goes through `node` rather than a shell's own JSON support, and
+  the one recipe with no cross-shell equivalent — reading `git merge-tree` output —
+  ships in both POSIX and PowerShell form.
 - `node` — for the bundled `mr-review-checks` server. Zero dependencies, nothing
   to install.
 - A `glab` MCP server (or equivalent GitLab API access) configured in your own

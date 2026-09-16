@@ -19,7 +19,9 @@ git: exit status 128.
 
 A root-cause fix exists but is deliberately not used here: setting `GITLAB_HOST` and `GITLAB_REPO` under `env` in a workspace-level `.kiro/settings/mcp.json` makes the repo-scoped tools work (verified). It's rejected because it pins one repo per config file, which defeats the point of a portable skill. `mcp_gitlab_glab_api` needs no setup anywhere. (`cwd` is not a supported `mcp.json` field, so that route doesn't exist.)
 
-Don't reach for `execute_pwsh` + raw `glab` as a first move either. It works, since the shell does run in the repo, but it throws away structured output and forces manual JSON parsing. Use it only when `glab_api` genuinely can't express the call.
+Don't reach for a terminal `glab` call as a first move either. It works, since the shell does run in the repo, but it throws away structured output and forces manual JSON parsing. Use it only when `glab_api` genuinely can't express the call.
+
+**If the failure looks like setup rather than tooling — no `glab` on PATH, an authentication error, no GitLab MCP server configured — say so and point the user at `node preflight.mjs --repo .` from the power's install directory, rather than diagnosing it a call at a time.** It checks `git`, `glab`, `glab auth status`, the bundled server and both scripts in one pass, and names what each missing piece will cost. Two things it deliberately cannot check are whether Kiro has connected to the bundled server and whether the tool prompts were accepted, so it prints those as reminders instead of claiming them.
 
 ## 2. The MCP `jq` flag is silently ignored — filtering needs the shell
 
@@ -31,11 +33,15 @@ Don't reach for `execute_pwsh` + raw `glab` as a first move either. It works, si
 
 **When a response is large and you only need a few fields, take it through the shell instead**, which *can* filter:
 
-```powershell
+**Filter through `node`, not through the shell's own JSON support.** `node` is already a
+hard requirement of this power, so it is present on every machine this runs on, which
+neither `jq` nor a given shell's cmdlets can claim. The pipeline below is also
+shell-agnostic: it carries no `$` for a POSIX shell to expand and no backtick for
+PowerShell to treat as an escape, so the same line works in both.
+
+```bash
 glab api "projects/{project_path_encoded}/merge_requests/{iid}" --hostname {host} |
-  ConvertFrom-Json |
-  Select-Object iid,state,title,source_branch,target_branch,user_notes_count,has_conflicts,merge_status,detailed_merge_status |
-  ConvertTo-Json -Compress
+  node -e "const keep='iid state title source_branch target_branch user_notes_count has_conflicts merge_status detailed_merge_status'.split(' ');let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const o=JSON.parse(s);console.log(JSON.stringify(Object.fromEntries(keep.map(k=>[k,o[k]]))))})"
 ```
 
 Measured: 4,604 → 281 characters, a 94% reduction, for the same information the workflow actually uses.

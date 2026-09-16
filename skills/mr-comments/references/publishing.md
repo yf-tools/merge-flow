@@ -25,10 +25,20 @@ Do not treat `Exit Code: 0` as confirmation of content. The commit succeeding te
 ## Use terminal commands, not git MCP tools
 
 When git hooks are present (Step 1), run `git add`, `git commit` and `git push` as
-**terminal commands** (`execute_pwsh`). Do not use `mcp_git_git_add` /
-`mcp_git_git_commit` — hooks execute either way, but through an MCP tool you get
-no visible output, no timeout, and no TTY. A stalled hook (e.g. `pretty-quick`
-waiting on a full pipe) is indistinguishable from a crash.
+**terminal commands**. Do not use `mcp_git_git_add` / `mcp_git_git_commit` — hooks
+execute either way, but through an MCP tool you get no visible output, no timeout,
+and no TTY. A stalled hook (e.g. `pretty-quick` waiting on a full pipe) is
+indistinguishable from a crash.
+
+**Use whatever terminal tool your environment exposes; this rule deliberately names
+none.** Two properties are what it depends on, and both are checkable before you
+rely on them: the tool **streams the hook's output** as it arrives, and it **accepts
+a timeout you choose** — the pre-push gate above sets 30 minutes because a measured
+hook took nine. The git MCP tools offer neither: their parameters are a repo path
+plus a message or a file list, with nowhere to put a duration, and they return a
+result summary rather than the hook's stdout. Naming one shell's tool here would
+pin the instruction to one operating system while leaving those two requirements
+implicit, which is backwards.
 
 Verified on a real repo: `git_commit` hung indefinitely while the pre-commit hook
 ran the staged formatter, with no output visible. A terminal command streams hook
