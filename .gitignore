@@ -2,3 +2,7 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Kiro session transcripts. These land in the power root when a session runs from
+# here, and one was found untracked and about to ship with the plugin.
+sess_*/

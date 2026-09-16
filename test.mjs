@@ -1,27 +1,49 @@
 #!/usr/bin/env node
 /**
- * Manifest and skill-frontmatter regression test for gitlab-mr-review.
+ * Regression suite for gitlab-mr-review: the bundled server's decision modules,
+ * the plugin.json manifest, the skill's frontmatter, and the workflow policies
+ * that a rewrite could silently drop.
  *
- * This power ships no server, so there's no scanner logic to test — but the
- * plugin.json manifest and the skill's YAML frontmatter can still drift and
- * silently break distribution, the same failure mode jira-ticket-workflow's
- * suite guards against. Kept as its own file rather than importing from the
- * sibling power, since a standalone power should be verifiable standalone.
- *
- * Zero dependencies — Node built-ins only.
+ * Self-contained rather than importing from a sibling power — a standalone power
+ * should be verifiable standalone. Node built-ins only.
  *
  * Run: node test.mjs
  */
 
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { join, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { triageMrPayload, normalizeProjectPath, parseMrTitle } from "./server/mr-payload.js";
+import { reconcileDiscussionCounts, slimThreadsForReport } from "./server/discussions.js";
+import { attributeStagedHunks, parseStagedDiff } from "./server/hunks.js";
+import { normalizeGraphqlMr, stripGid, MR_QUERY } from "./server/graphql.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = __dirname;
 
 let passed = 0;
 const failures = [];
+
+/**
+ * Deterministic string order for every sort in this file.
+ *
+ * `Array.prototype.sort()` with no comparator coerces elements to strings and orders them
+ * by UTF-16 code unit. That is correct for all of these lists — they're ASCII filenames,
+ * tool names and keywords — but correct by accident, and the intent belongs in the code
+ * rather than inferred from the data that happens to be there today.
+ *
+ * Code-unit order rather than `localeCompare`: these sorts only need *a* total order
+ * applied identically to both sides of a comparison, and `localeCompare` is locale- and
+ * ICU-dependent. It can also collate two distinct strings as equal, which leaves their
+ * relative order unspecified and lets an assertion flake between machines.
+ */
+const byCodeUnit = (a, b) => {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+};
 
 function eq(label, actual, expected) {
   const a = JSON.stringify(actual);
@@ -33,6 +55,27 @@ function eq(label, actual, expected) {
 function truthy(label, actual) {
   if (actual) passed++;
   else failures.push(`${label}\n      expected truthy, got: ${JSON.stringify(actual)}`);
+}
+
+function falsy(label, actual) {
+  if (!actual) passed++;
+  else failures.push(`${label}\n      expected falsy, got: ${JSON.stringify(actual)}`);
+}
+
+/**
+ * `expect` requires the message to contain it — worth passing whenever *which*
+ * error matters, since a bare-throw assertion is equally satisfied by a typo's
+ * `TypeError`.
+ */
+function throws(label, fn, expect) {
+  try {
+    fn();
+    failures.push(`${label}\n      expected a throw, got none`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (expect === undefined || message.includes(expect)) passed++;
+    else failures.push(`${label}\n      expected a throw containing ${JSON.stringify(expect)}, got: ${message}`);
+  }
 }
 
 // ---------- Agent Plugins 1.0.0 manifest constraints ----------
@@ -102,6 +145,146 @@ function parseFrontmatter(text) {
   return fields;
 }
 
+/**
+ * Agent Skills spec conformance — https://agentskills.io/specification
+ *
+ * The hard limits are the point: `description` is what Kiro matches requests
+ * against, it grows with every scope addition, and crossing 1024 fails validation
+ * *quietly* — the skill just stops activating. Same for `compatibility` at 500.
+ */
+function testSkillSpecConformance() {
+  const dir = join(ROOT, "skills", "mr-comments");
+  const raw = readFileSync(join(dir, "SKILL.md"), "utf8");
+
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
+  truthy("spec: SKILL.md opens with YAML frontmatter", fm !== null);
+  if (!fm) return;
+  const block = fm[1];
+
+  const field = (name) => {
+    const m = new RegExp(String.raw`(?:^|\n)${name}:[ \t]*([\s\S]*?)(?=\n[a-zA-Z_-]+:|$)`).exec(block);
+    return m ? m[1].trim() : null;
+  };
+
+  const name = field("name");
+  eq("spec: name matches the parent directory", name, "mr-comments");
+  truthy("spec: name is 1–64 chars", name.length >= 1 && name.length <= 64);
+  truthy("spec: name uses only lowercase alphanumerics and single hyphens", /^[a-z0-9]+(-[a-z0-9]+)*$/.test(name));
+
+  // Headroom is in the label so a near-miss shows in passing output, not only on break.
+  const description = field("description");
+  truthy("spec: description is non-empty", (description?.length ?? 0) > 0);
+  truthy(
+    `spec: description is ${description.length}/1024 chars (${1024 - description.length} left)`,
+    description.length <= 1024,
+  );
+
+  const compatibility = field("compatibility");
+  truthy(
+    `spec: compatibility is ${compatibility.length}/500 chars (${500 - compatibility.length} left)`,
+    compatibility.length >= 1 && compatibility.length <= 500,
+  );
+  // It only earns its place if it names the things that actually gate the run.
+  for (const requirement of ["GitLab only", "glab", "Node.js", "Atlassian"]) {
+    truthy(`spec: compatibility names ${requirement}`, compatibility.includes(requirement));
+  }
+
+  truthy("spec: license is declared", (field("license")?.length ?? 0) > 0);
+
+  // Optional directories: only the conventional three, correctly placed.
+  const entries = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort(byCodeUnit);
+  eq("spec: only the conventional optional directories exist", entries, ["references", "scripts"]);
+
+  // scripts/ — deterministic work, per the spec's own recommendation.
+  const scripts = readdirSync(join(dir, "scripts")).sort(byCodeUnit);
+  eq("spec: both deterministic steps are scripts", scripts, ["fetch-mr.mjs", "git-context.mjs"]);
+  for (const s of scripts) {
+    const src = readFileSync(join(dir, "scripts", s), "utf8");
+    truthy(`spec[${s}]: has a shebang so it can be executed directly`, src.startsWith("#!/usr/bin/env node"));
+    truthy(
+      `spec[${s}]: documents why it is a script rather than inline commands`,
+      src.includes("Why this is a script"),
+    );
+    // A script that exits silently is worse than the inline command it replaced,
+    // because the failure is now hidden. `proc`, not `process`: both scripts reach
+    // it via `globalThis` so an editor without @types/node stays quiet.
+    truthy(`spec[${s}]: writes errors to stderr`, src.includes("proc.stderr.write"));
+    truthy(`spec[${s}]: exits non-zero on failure`, /proc\.exit\([12]\)/.test(src));
+    // Zero-dependency is a promise the README makes.
+    falsy(`spec[${s}]: imports nothing outside node:`, /from\s+["'](?!node:)[^."']/.test(src));
+  }
+
+  // SKILL.md must actually route through them, or they're dead weight that ships. Matched
+  // on the filename rather than on `node scripts/<s>`: the command now interpolates the
+  // absolute path from `locate_bundled_scripts`, since a relative path does not resolve
+  // from the user's repository.
+  for (const s of scripts) {
+    truthy(`spec: SKILL.md invokes ${s}`, new RegExp(String.raw`\{scripts\["${s}"\]\.run\}`).test(raw));
+  }
+  // And the old hand-written forms must be gone, or the run will still improvise.
+  falsy("spec: the labelled-echo git chain is no longer prescribed", raw.includes('echo "---DIRTY---"'));
+  falsy(
+    "spec: the hand-written graphql invocation is no longer prescribed",
+    raw.includes("glab api graphql --raw-field query="),
+  );
+
+  // Observed on MR !491: `node … --host <h>` matched an agent shell's
+  // long-running-process check — "appears to start a server (contains port or host)" —
+  // and the run got past it by overriding the safety gate. The GitLab host flag is
+  // `--instance` so nothing needs overriding. Checked against the prescribed command
+  // line rather than the whole file, because the prose explaining the rule necessarily
+  // names the flag it forbids.
+  // Anchored on the flags rather than on `node scripts/…`, because the prescribed command
+  // now runs the absolute path `locate_bundled_scripts` returns: the working directory is
+  // the user's repository, so a relative `scripts/` path does not resolve.
+  const fetchLine = raw.split(/\r?\n/).find((l) => l.includes("fetch-mr.mjs") && l.includes("--project"));
+  truthy("spec: SKILL.md prescribes the fetch with --instance", fetchLine?.includes("--instance {host}"));
+  falsy("spec: the prescribed fetch carries no dev-server-shaped flag", /--(host|port)\b/.test(fetchLine ?? ""));
+  truthy(
+    "spec: SKILL.md tells the run to locate the scripts before running them",
+    raw.includes("locate_bundled_scripts"),
+  );
+
+  // And the rejection is behavioural, not documentary: `--host` must fail loudly.
+  // Silently ignoring it would query whichever host `glab` defaults to and return a
+  // real merge request from the wrong GitLab, with nothing to reveal the swap. Both
+  // calls exit before any network access.
+  const runFetch = (args) => {
+    try {
+      execFileSync(process.execPath, [join(dir, "scripts", "fetch-mr.mjs"), ...args], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { status: 0, stderr: "" };
+    } catch (err) {
+      return { status: err.status, stderr: String(err.stderr ?? "") };
+    }
+  };
+
+  const usage = runFetch([]);
+  eq("spec[fetch-mr.mjs]: a call with no arguments exits 2", usage.status, 2);
+  truthy("spec[fetch-mr.mjs]: the usage line names --instance", usage.stderr.includes("--instance <host>"));
+  falsy("spec[fetch-mr.mjs]: the usage line offers no --host flag", /--host\b/.test(usage.stderr));
+
+  const rejected = runFetch(["--project", "a/b", "--iid", "1", "--host", "example.net"]);
+  eq("spec[fetch-mr.mjs]: --host is rejected rather than ignored", rejected.status, 2);
+  truthy("spec[fetch-mr.mjs]: the rejection names the offending flag", rejected.stderr.includes("--host"));
+
+  // fetch-mr.mjs duplicates MR_QUERY so the skill folder stays importable on its
+  // own. Invariant 4 permits that only with a test asserting they agree — this one.
+  const scriptQuery = /const MR_QUERY = `([\s\S]*?)`;/.exec(readFileSync(join(dir, "scripts", "fetch-mr.mjs"), "utf8"));
+  truthy("spec: fetch-mr.mjs carries its own copy of the query", scriptQuery !== null);
+  const normalize = (q) => q.replace(/\s+/g, " ").trim();
+  eq(
+    "spec: the script's query and server/graphql.js MR_QUERY have not drifted",
+    normalize(scriptQuery[1]),
+    normalize(MR_QUERY),
+  );
+}
+
 function testSkillFrontmatter() {
   const skillsDir = join(ROOT, "skills");
   if (!existsSync(skillsDir)) {
@@ -141,27 +324,297 @@ function testSkillFrontmatter() {
 
 /** Every path a caller might expect (README, POWER.md links) must resolve. */
 function testDeclaredFilesExist() {
-  for (const f of ["LICENSE", "README.md", "POWER.md", "plugin.json"]) {
+  for (const f of ["LICENSE", "README.md", "POWER.md", "plugin.json", "mcp.json"]) {
     truthy(`layout: ${f} exists at package root`, existsSync(join(ROOT, f)));
   }
   truthy("layout: skills/mr-comments/SKILL.md exists", existsSync(join(ROOT, "skills", "mr-comments", "SKILL.md")));
+
+  // A test already guards the skill folder's contents; nothing guarded the power root,
+  // and a Kiro session transcript (`sess_<uuid>/`) was found sitting there untracked and
+  // uncovered by .gitignore, about to ship with the plugin.
+  //
+  // Presence is not the assertion: a session running from this directory legitimately
+  // creates one mid-work, and failing the build for that would be hostile. What must
+  // hold is that it can never be committed or shipped, so the check is on .gitignore.
+  truthy(
+    "layout: .gitignore excludes session transcripts so one cannot ship with the plugin",
+    /^sess_/m.test(readFileSync(join(ROOT, ".gitignore"), "utf8")),
+  );
+
+  // mcp.json must conform to the Agent Plugins schema and its entry point must
+  // resolve, or the server is skipped at install with a "Component Issues" warning.
+  const mcp = JSON.parse(readFileSync(join(ROOT, "mcp.json"), "utf8"));
+  eq(
+    "mcp.json: only spec-allowed keys",
+    Object.keys(mcp).sort((a, b) => a.localeCompare(b)),
+    ["$schema", "mcpServers"],
+  );
+  eq(
+    "mcp.json: $schema points at the expected spec version",
+    mcp.$schema,
+    `https://agent-plugins.org/schemas/${AGENT_PLUGINS_VERSION}/mcp.schema.json`,
+  );
+  const servers = Object.entries(mcp.mcpServers ?? {});
+  eq("mcp.json: declares exactly one server", servers.length, 1);
+  for (const [name, cfg] of servers) {
+    eq(`mcp.json[${name}]: stdio transport`, cfg.type, "stdio");
+    truthy(`mcp.json[${name}]: declares args`, Array.isArray(cfg.args));
+    // An absolute or relative path breaks on another machine.
+    const usesPluginRoot = (cfg.args ?? []).some((a) => String(a).includes("${PLUGIN_ROOT}"));
+    truthy(`mcp.json[${name}]: paths go through \${PLUGIN_ROOT}`, usesPluginRoot);
+    for (const arg of cfg.args ?? []) {
+      const raw = String(arg);
+      if (!raw.includes("${PLUGIN_ROOT}")) continue;
+      const resolved = raw.replace("${PLUGIN_ROOT}", ROOT).replaceAll("/", sep);
+      truthy(`mcp.json[${name}]: entry point exists → ${raw}`, existsSync(resolved));
+    }
+  }
+
+  // Every module package.json claims to ship must be present.
+  const pkg = JSON.parse(readFileSync(join(ROOT, "server", "package.json"), "utf8"));
+  for (const f of pkg.files ?? []) {
+    truthy(`layout: server/${f} exists as declared in package.json files`, existsSync(join(ROOT, "server", f)));
+  }
+  for (const target of Object.values(pkg.exports ?? {})) {
+    truthy(`layout: export target ${target} resolves`, existsSync(join(ROOT, "server", String(target))));
+  }
+}
+
+/**
+ * Two haystacks, because SKILL.md loads whole on activation and `references/` only
+ * loads when pointed at:
+ *
+ *   `skill`  — what is RESIDENT. Gate placement and ordering must hold here.
+ *   `corpus` — SKILL.md plus every reference. For rules that need only to EXIST,
+ *              so moving prose into a reference doesn't drop its assertion.
+ */
+function loadSkillCorpus() {
+  const dir = join(ROOT, "skills", "mr-comments");
+  const skill = readFileSync(join(dir, "SKILL.md"), "utf8");
+  const refDir = join(dir, "references");
+  const refs = existsSync(refDir)
+    ? readdirSync(refDir)
+        .filter((f) => f.endsWith(".md"))
+        .sort(byCodeUnit)
+        .map((f) => ({ name: f, text: readFileSync(join(refDir, f), "utf8") }))
+    : [];
+  return { skill, refs, corpus: [skill, ...refs.map((r) => r.text)].join("\n") };
+}
+
+/**
+ * The split's guardrails. Deferring procedure into `references/` cut activation
+ * cost and created exactly one new failure mode: something that must be in front
+ * of the run every time drifts into a file that only loads when pointed at.
+ */
+function testProgressiveDisclosure() {
+  const { skill, refs } = loadSkillCorpus();
+
+  truthy("disclosure: at least one reference file exists", refs.length > 0);
+
+  // A reference nobody points at is dead weight that still ships.
+  for (const r of refs) {
+    truthy(`disclosure: SKILL.md points at references/${r.name}`, skill.includes(`references/${r.name}`));
+  }
+
+  // The spec warns against nested reference chains — a run following two hops is
+  // a run that stops following.
+  for (const r of refs) {
+    const others = refs.filter((o) => o.name !== r.name).filter((o) => r.text.includes(`references/${o.name}`));
+    eq(
+      `disclosure: references/${r.name} does not chain to another reference`,
+      others.map((o) => o.name),
+      [],
+    );
+  }
+
+  // Anything deciding whether the run stops must be resident: reachable only via a
+  // reference means optional in practice.
+  for (const resident of [
+    // The invariants and the numbered rules are the reasoning frame.
+    "## Five invariants. Everything else is an instance of them.",
+    "## The thirteen rules that matter most",
+    "## When this skill doesn't cover what you're looking at",
+    // Lane choice — this is precisely where !508 went wrong.
+    "## Step 0b — Decide what the run is for, then pick the lane",
+    "**If this file seems not to describe the task, read Step 0b before concluding that — and never improvise a run around it.**",
+    // The one report, its stop, and the constraint that makes it cheap enough to
+    // send first: it is written before any project file has been opened.
+    "**The report is mandatory, it is the first user-facing text of the run, and it is a stop — end the turn on it and wait for a reply.**",
+    "**No claim about the code belongs in this report.**",
+    // Every blocking gate's own headline.
+    "## Step 5 — Present the Report (BLOCKING)",
+    "### Step 6b — When the picture changes (BLOCKING)",
+    "## Step 8 — Present the Final Summary (BLOCKING)",
+    "**The pre-push hook decision (BLOCKING).**",
+    "### Preview (BLOCKING)",
+    "**STOP until the user approves.**",
+    // The batch plan is what makes the report fast enough to matter.
+    "### Four batches, not fifteen turns",
+    // The prose rules must be resident: Step 6's report is rendered long before
+    // publishing.md loads at Step 9, so moving this into a reference makes the rule
+    // unreachable at the first moment it applies.
+    "## Anything posted to GitLab or Jira gets written like a person wrote it",
+    "**The report's own prose is not exempt.**",
+    // Where the run must not go.
+    "## Step 13 — Where this skill ends",
+  ]) {
+    truthy(`disclosure: stays resident in SKILL.md — ${resident.slice(0, 56)}`, skill.includes(resident));
+  }
+
+  // Observed: inside a Power, `references/investigating.md` read as a steering path
+  // and the agent called readSteering — "Steering file … not found for power". The
+  // layout was right, so the fix is naming the tool before the first pointer is followed.
+  truthy(
+    "disclosure: the index says references are read as files, not via power steering",
+    skill.includes(
+      "**Read them with the ordinary file-read tool, resolving `references/…` against this skill's own folder.**",
+    ) && skill.includes("not** steering files"),
+  );
+  // And the files must actually live there, or the pointers are lies.
+  truthy(
+    "disclosure: references sit beside SKILL.md per the Agent Skills layout",
+    existsSync(join(ROOT, "skills", "mr-comments", "references")),
+  );
+  falsy("disclosure: no stray power-root steering/ directory competing with them", existsSync(join(ROOT, "steering")));
+
+  const failures = refs.find((r) => r.name === "failures.md");
+  truthy("disclosure: the run-by-run evidence log exists", failures !== undefined);
+  truthy(
+    "disclosure: the evidence log says it is not needed to follow the workflow",
+    (failures?.text ?? "").includes("**You do not need this file to follow the workflow.**"),
+  );
+  // Timestamps of the form 08:07:00 / 13:16:46 are the tell for a transcript.
+  eq("disclosure: no run transcripts left in SKILL.md", skill.match(/\b\d\d:\d\d:\d\d\b/g) ?? [], []);
+
+  // A ratchet, not a target: set just above the achieved size so regrowth fails,
+  // and lowered as more moves land. The spec's 500-line advice is unreachable while
+  // every gate, template and stop condition stays resident — which matters more.
+  const lines = skill.split(/\r?\n/).length;
+  truthy(`disclosure: SKILL.md is ${lines} lines, under the 700-line ratchet`, lines < 700);
+
+  // A reference is only useful if the run receives all of it, and a read can come back
+  // truncated. Measured in one session: reporting.md at 22,426 bytes arrived complete,
+  // investigating.md at 33,475 arrived truncated with roughly 2,900 bytes of its tail
+  // missing — and the tail held the `--raw-field` rule, the `gid://` trap and the
+  // `discussions_text` rule. Nothing failed, because nothing was checking.
+  //
+  // The restructure has landed, so this is now the real limit rather than a ratchet with
+  // a standing exception: Step 6 moved to checkout.md (it is released by the report's
+  // go-ahead, so batch 1 never needed it), the carry-forward list folded into the profile
+  // table as a `Used by` column, and the table's alignment padding came out. 33,475 →
+  // 22,542, which puts every reference inside the largest size observed to read whole.
+  //
+  // Kept as one number for every file, not a per-file allowance, because the failure is
+  // about what a single read returns and that does not care which file it was.
+  const READS_WHOLE = 23_000;
+  for (const r of refs) {
+    const bytes = Buffer.byteLength(r.text, "utf8");
+    truthy(`disclosure: references/${r.name} is ${bytes} bytes, inside the ${READS_WHOLE}-byte read-whole limit`, bytes < READS_WHOLE);
+  }
+}
+
+/**
+ * Everything the policy assertions read, loaded once. `*Flat` collapses whitespace so a
+ * needle can span a line wrap in the source — most of the doc claims are sentences that
+ * a formatter is free to re-wrap.
+ */
+function loadPolicyDocs() {
+  const { skill, refs, corpus } = loadSkillCorpus();
+  const power = readFileSync(join(ROOT, "POWER.md"), "utf8");
+  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  const byName = (name) => refs.find((r) => r.name === name)?.text ?? "";
+
+  return {
+    skill,
+    refs,
+    corpus,
+    power,
+    readme,
+    plugin: readFileSync(join(ROOT, "plugin.json"), "utf8"),
+    powerFlat: power.replace(/\s+/g, " "),
+    readmeFlat: readme.replace(/\s+/g, " "),
+    reporting: byName("reporting.md"),
+  };
+}
+
+/**
+ * Offsets of the headings the ordering assertions compare, resolved once in dependency
+ * order — several are searched *from* another, so they can't be computed independently.
+ *
+ * A missing heading yields -1 rather than throwing, and that surfaces as a failed
+ * comparison downstream, because every assertion built on these is a `>` between two of
+ * them. Nothing here can pass by being absent.
+ */
+function sectionOffsets(docs) {
+  const { skill } = docs;
+  const at = (needle, from) => skill.indexOf(needle, from);
+
+  const investigate = at("## Steps 1–4 — Investigate");
+  const reportGate = at("## Step 5 — Present the Report (BLOCKING)");
+  const idxTable = skill.slice(investigate, reportGate);
+  const approval = at("## Step 8 — Present the Final Summary");
+  const jiraFinish = at("## Step 11 — Return Jira to Review and Log Time");
+
+  return {
+    outputDiscipline: at("## Internal discovery is not a user-facing report"),
+    formatting: at("## Formatting every report to the user"),
+    parseUrl: at("## Step 0 — Parse the MR URL"),
+    lane: at("## Step 0b — Decide what the run is for, then pick the lane"),
+    profile: investigate,
+
+    investigate,
+    reportGate,
+    startWork: at("## Step 6 — Start Work: Checkout, Jira, Then the Code"),
+    idxTable,
+    rowMr: idxTable.indexOf("**2 — Fetch MR**"),
+    rowJira: idxTable.indexOf("**3 — Verify Jira**"),
+
+    reportSection: at("### One report, then the work"),
+    reportMandatory: at(
+      "**The report is mandatory, it is the first user-facing text of the run, and it is a stop — end the turn on it and wait for a reply.**",
+    ),
+    batches: at("### Four batches, not fifteen turns"),
+    boundedVerification: at("### Verification is bounded"),
+
+    approval,
+    commit: at("## Step 9 — Commit and Push"),
+    replies: at("## Step 10 — Reply Inline and Resolve Each Thread"),
+    jiraFinish,
+    timeAsk: at("### Ask for time spent, then make both Jira writes in one turn", jiraFinish),
+    lessons: at("## Step 12 — Optional Follow-Up: Capture Recurring Lessons"),
+  };
 }
 
 function testWorkflowPolicyContracts() {
-  const skill = readFileSync(join(ROOT, "skills", "mr-comments", "SKILL.md"), "utf8");
-  const power = readFileSync(join(ROOT, "POWER.md"), "utf8");
-  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
-  const plugin = readFileSync(join(ROOT, "plugin.json"), "utf8");
-  const powerFlat = power.replace(/\s+/g, " ");
+  const docs = loadPolicyDocs();
+  const marks = sectionOffsets(docs);
 
+  assertCorpusPhrases(docs.corpus);
+  assertStaleWordingGone(docs);
+  assertDocClaims(docs);
+  assertLayoutOrdering(docs, marks);
+  assertInvestigateOrdering(docs, marks);
+  assertPublishOrdering(docs, marks);
+  assertReportSectionOrdering(docs, marks);
+  assertLaneOrdering(docs, marks);
+  assertReportTemplateShape(docs);
+  assertBatchPlanShape(docs, marks);
+}
+
+/**
+ * Rules that must be present somewhere in SKILL.md or its references. Asserted against the
+ * whole corpus, not SKILL.md alone, so moving prose into a reference doesn't drop its
+ * assertion — that is the one failure mode progressive disclosure introduced.
+ */
+function assertCorpusPhrases(corpus) {
   for (const phrase of [
     "Internal discovery is not a user-facing report",
-    "Steps 0–5 are investigation. Run them quietly",
+    "Steps 0–4 are investigation, and all of them run *before* the report. Run them quietly",
     "Which power or skill you activated",
     "Checks that passed — host is GitLab, tree is clean",
     "A different current branch than `source_branch` is normal, not an alarm",
     "Output discipline",
-    "Step 2.5 — Verify the Jira Ticket (silent; no writes, no gate)",
+    "Step 3 — Verify the Jira Ticket (silent; no writes, no gate)",
     "Ticket identity for Jira lifecycle synchronization",
     "git merge --ff-only",
     "git diff --cached",
@@ -172,8 +625,8 @@ function testWorkflowPolicyContracts() {
     "summary that does not match the MR's work is a 🛑 stop",
     "getJiraIssue",
     "Never match on `to.statusCategory` alone",
-    "Call `transitionJiraIssue` with the exact transition recorded in Step 2.5",
-    "confirm the resulting `status.name` is exactly the approved target",
+    "Call `transitionJiraIssue` with the exact transition recorded in Step 3",
+    "the resulting `status.name` is exactly the approved target",
     "Jira approval is independent from commit approval and time logging",
     "If no direct review transition exists:",
     "Confirm leave unchanged/manual?",
@@ -181,12 +634,22 @@ function testWorkflowPolicyContracts() {
     "never repost an approved reply already present",
     "Resume Step 11 only after every approved action is observed remotely",
     "Step 11 — Return Jira to Review and Log Time",
-    "Publication success is a hard precondition for review status",
-    "failed push, failed approved reply, or failed approved resolution leaves Jira in active development",
-    "closing time-log question below still runs",
+    "**Publication success is a hard precondition.**",
+    "a failed push, reply or resolution **leaves Jira in active development**",
+    "The time question below still runs; time was spent either way.",
     "Do not ask for time spent at this gate",
-    "### Ask for time spent last, then log it",
-    "**This is the final question in the workflow.**",
+    "### Ask for time spent, then make both Jira writes in one turn",
+    "**This is the final question in the workflow**",
+    // The time question moved ahead of the two Jira writes so they share one turn
+    // (observed: three turns for two writes and a question). Asking first also makes
+    // rule 12's failure unavailable rather than forbidden — with no transition yet,
+    // there is no resulting status to announce early.
+    "It is the last *question*, not the last *write*:",
+    "**Name the target as pending, never as done.**",
+    "**Then stop and go ask about time.**",
+    "**This ordering is also why there's nothing to announce here.**",
+    "**issue both writes in one turn:**",
+    "**Then one closing line, with both results stated separately:**",
     "How much time should I log against it?",
     "**Never infer the duration**",
     "Ask even when earlier stages failed",
@@ -197,14 +660,323 @@ function testWorkflowPolicyContracts() {
     "never suppress the worklog because status synchronization could not complete",
     "Definitive validation and staging",
     "loops back through this entire phase",
-    "Do not stage or format here",
-    "fetch and show ahead/behind state",
-    "Never write or disclose it",
+    "No staging, no formatting after approval",
+    "stop for an explicit reconciliation decision",
+    "**never write or disclose it** in any remote text",
     "Optional Follow-Up: Capture Recurring Lessons",
     "append-only provenance",
     "Never replace or drop earlier sources",
+    // Asserted in both powers so the `ndjson` workaround can't drift apart.
+    'List endpoints need `output: "ndjson"`',
+    "single resource → default output; collection → `ndjson`",
+    // --- MR !500: four regressions. 1. Conflict state was fetched and never read.
+    "`has_conflicts`, `merge_status`, `detailed_merge_status`",
+    "A conflicted MR changes the plan — say so before triaging anything",
+    "Do you want the conflict resolved first",
+    "A conflict resolution is new scope, not part of the review pass",
+    // 2. The pre-report output was replaced with narration, twice. The count line
+    // grew into orientation facts because the run had them and no slot for them.
+    "### One report, then the work",
+    "**There is one report now, and it is the run's first output.**",
+    "**What must never appear in the report:**",
+    "**Anything you'd have to read a project file to know.**",
+    "the blocker's question replaces the closing one",
+    "**Non-blocking flags belong in the same message, on the Flags row**",
+    "don't preface the report with a sentence restating its own numbers",
+    // 2b. MR !491: the content was correct and in the right slot, but six tool calls
+    // shared its turn and the client collapsed them into a progress line, scrolling
+    // it out of view. Content was never the problem; the missing pause was.
+    "**The report is mandatory, it is the first user-facing text of the run, and it is a stop — end the turn on it and wait for a reply.**",
+    "No tool call goes out in the same turn that emits it",
+    '**What a bare "go ahead" covers: batches 3 and 4, the Jira transition the report named, and the ✅ Fix / 🔵 Nitpick items.**',
+    "**That answer is also the go-ahead**",
+    // Anchored on the imperative, not the narrative — evidence is in failures.md.
+    "**Four ways this has gone wrong. Each is a thing not to do:**",
+    "**Don't split it in two.**",
+    "**Don't emit it and keep going.**",
+    "An unread report is worth about as much as no report",
+    "Go ahead?",
+    // 2c. MR !491 again: the brief-then-report split was two stops for one decision,
+    // the second message led with nine settled threads, and Jira was asked separately.
+    "**Resolved threads are a number, never a list.**",
+    "**Resolved threads never become items.**",
+    "**One question, and it covers everything the run does next.**",
+    "**The Jira move is a line in that list, not a second question.**",
+    "the order in that list is not cosmetic**",
+    "### Verification is bounded — don't let it eat the run",
+    "Bound the API verification in Step 6 to a couple of reads",
+    "Cap this at a couple of reads",
+    // 3. `git merge-tree` output misread four times in a row. Verified on git 2.53:
+    // markers sit inside the diff with a leading `+`, so anchoring matches nothing.
+    "`git merge-tree` reports every touched file, not just conflicts",
+    "**Grep for the conflict markers, and do not anchor the pattern.**",
+    "So `^<<<<<<<` matches nothing",
+    // 4. Step 11's re-read skipped because no transition was needed.
+    "This applies even when no transition is needed",
+    "the worklog-only path too",
+    "must come from that re-read, not from Step 3",
+    // --- Generalization layer: without invariants and an uncovered-case protocol,
+    // --- an unlisted scenario gets mapped onto the nearest paragraph.
+    "## Five invariants. Everything else is an instance of them.",
+    "A claim needs evidence from this run",
+    "A gate closes only on the user's words",
+    "Every list here is examples, never a boundary",
+    "A fact stated in two places will drift",
+    "Open-ended work needs a stopping rule",
+    "## When this skill doesn't cover what you're looking at",
+    "You will hit situations described nowhere in this file",
+    "Which decision it blocks",
+    "Mapping it onto the closest documented case",
+    "Retrying the same call unchanged",
+    "Naming a cause you haven't confirmed",
+    "Uncovered does not mean unbounded",
+    // --- Decisions that moved out of prose into the bundled server. The skill must
+    // --- route through them rather than reasoning inline.
+    "### Run the payload through `triage_mr_payload` — don't eyeball it",
+    "A check that didn't run is not a check that passed",
+    "Get these numbers from `reconcile_discussion_counts`, not by counting",
+    // gid stripping and `--raw-field` are the two GraphQL traps that break silently.
+    // SKILL.md no longer spells the invocation out, but a reader of the fallback
+    // path still has to hit them.
+    "**`--raw-field`, never `--field`.**",
+    "`triage_graphql_mr`",
+    "**`discussions_text`**",
+    "The bare remainders are **exactly** the REST ids",
+    "**Don't rebuild the payload as objects to pass it in.**",
+    "**`reconciles: null`**",
+    "attribute_staged_hunks",
+    "Only list a file in `formatter_files` if the formatter said it changed that file",
+    'is not "attribution done"',
+    // The template must use the tool's own field names. `threadsTotal` is the raw
+    // payload length — on MR !508 that was 5 against 3 real threads, because GitLab
+    // returns "requested review from @x" as a discussion.
+    "**Report `feedbackThreads`, never `threadsTotal`.**",
+    // Observed on MR !491: ten threads rendered as ten identical five-line blocks, so
+    // the single item needing a decision sat below nine settled ones. Resolved threads
+    // are now a bare count. The safety property is that the count can only ever hold
+    // threads GitLab itself marked resolved, so nothing the run would change hides there.
+    "{needsYou} of {feedbackThreads} thread(s) need your call",
+    "**`{needsYou} + {rolledUp}` must equal `feedbackThreads`.**",
+    // ...and it must not imply they were verified, because no file was opened.
+    "I haven't re-checked those against the code",
+    // Resolve state is GitLab's bookkeeping and the classification is the run's; a
+    // report that conflates them mislabels a resolved thread that still holds a question.
+    "**Resolve state and `{needsYou}` are not quite the same split",
+    // Emoji help only while the set stays small enough to scan.
+    "### The fixed marker set",
+    // Observed: a run issued `git remote get-url origin; git branch --show-current; git
+    // status --porcelain`, couldn't tell the empty status from a broken separator,
+    // re-issued `git status --porcelain` alone, then ran git-context.mjs anyway. Three
+    // calls and nineteen seconds for what the script returns in one. The prohibition
+    // existed, 436 lines away in the reference-index section, and the run had the whole
+    // file in context — so this is about where the rule sits, not whether it exists.
+    "**Never hand-roll these reads.**",
+    "don't `list_directory` the scripts folder to check the file is there",
+    // git-context.mjs returns `remote`, and a run called `git remote get-url origin`
+    // separately four seconds before getting the same value from the script.
+    "**`remote` is in that output, so there is no separate `git remote get-url origin`**",
+    // The paths now arrive in the tool description, so the skill must stop presenting
+    // them as a convention to be checked and start pointing at the evidence.
+    "**You already have the script paths — don't go looking for them.**",
+    // Observed: five update_session_information calls across 38 seconds, three of them
+    // setting the same waiting_on_user status, before a single readable word was written.
+    // The skill never mentions that tool; the emphasis on stopping invited it.
+    "**The stop is ending the turn, not announcing that you are about to.**",
+    // Observed: the run passed the site's `name` as cloudId, and both Atlassian reads
+    // failed with "Input does not look like a valid domain or URL" before being retried
+    // with the hostname. The response carries id, url and name, and nothing said which
+    // one to use, so it was a coin flip — the run before this one guessed right.
+    "never its `name`",
+    "Input does not look like a valid domain or URL",
+    // Observed: a run made zero read_file calls, skipped reporting.md, and improvised a
+    // report missing the title heading, the needsYou lead, the verbatim countLine and the
+    // closing list, while adding the "Suggested fix" the template forbids before any code
+    // is read. The bullet had described the read as a batching optimisation, not a
+    // requirement, so "cheap to batch" read equally as "safe to skip".
+    "and this read is not optional",
+    "you may not render Step 5 from memory",
+    // Anything posted to GitLab or Jira outlives the run and a colleague reads it, so
+    // the prose rules cover replies, the commit body and worklog notes. The report's
+    // own sentences are included: only its markers and headings exist to be scanned.
+    "**The report's own prose is not exempt.**",
+    "no escalating agreement",
+    "**Escalating agreement.**",
+    "The rules below govern what you post, not how this file is written",
+    // The length heuristic is the one that survives after every other tell is fixed.
+    "A reply three sentences longer than the comment it answers",
+    "**`threadsTotal` does not appear in this header at all**",
+    // --- Line-by-line audit: mandated checks that were impossible as written, and
+    // --- inputs no step established.
+    // General MR comments aren't resolvable, so unresolved+resolved sits below
+    // threadsTotal by design — the header arithmetic named the wrong field.
+    "`{X} + {Y} == resolvableThreads`",
+    // Anchored on words, not emphasis syntax: an editor may rewrite *diff* to _diff_.
+    "threads resolvable, so a general MR-level comment is a thread you must triage",
+    // numstat is repo-wide; Step 8's template needs per-file figures.
+    "`numstat` and `totals` are **repo-wide**",
+    "those come from `files[].added` / `files[].removed`",
+    // current_user is required by two tool calls and was never sourced.
+    "The GitLab username you're authenticated as",
+    "`glab_auth_status` reports",
+    // Step 4 told the agent to hand-filter nine lines before forbidding it.
+    "**Don't pre-filter or pre-count anything first.**",
+    // The count line has three endings; the templates showed only the tick.
+    "**Use the tool's `countLine` verbatim rather than typing that shape.**",
+    // --- MR !500 latency: five minutes to the first phase over ~15 serial round
+    // --- trips, none individually slow. One rule per observed cause.
+    // Profiling ran as six turns before the MR fetch; half isn't needed until Step 7.
+    "**The Batch column is the whole point of splitting this table.**",
+    "**This call is batch 1**",
+    "**This checkout is batch 3 — after the report and the reply to it, not before.**",
+    "**This is batch 4.**",
+    // getJiraIssue and getTransitionsForJiraIssue went out nine seconds apart. They
+    // moved forward to batch 2 as well, so the ticket's status is a row in the report
+    // rather than a question a turn later.
+    "go out together in **batch 2**: **issue both in the same turn.**",
+    "**Batch 2, not batch 3, and that is the change that made the report whole.**",
+    // reconcile was called three times: once missing `resolvable`, once correctly,
+    // once with `user_notes_count: 0` alone after the schema had rejected it.
+    "**Keep five fields per note, and don't trim below them:**",
+    "**One call.**",
+    "**A truncated response is not a failed fetch.**",
+    // Two builds started "as diagnostics" while the pre-push hook already built all
+    // six projects, then polled ~2 minutes before the summary.
+    "**A development build is still a build.**",
+    // `--max-warnings=0` appended to a script that already carried it.
+    "**Run project scripts exactly as the `scripts` block defines them.**",
+    // Ten calls across four tools chasing one symbol, with the cap already written down.
+    "**Two escalations of the same question is the cap, not two of each tool.**",
+    // --- MR !508 leftovers: three wasted calls and one improvised workaround.
+    // A bare `;` between git reads made a clean tree indistinguishable from a mangled
+    // separator. `git-context.mjs` returns JSON now, so there is no separator to
+    // mangle; the old chained form is in the forbidden list below.
+    "JSON makes empty structurally empty instead of conventionally empty",
+    // The same confusion also re-fetched an MR payload that had returned fine.
+    "**Re-issue only the call that failed. A batch is not a transaction**",
+    // A getJiraIssue after a transition that already named its resulting status is a
+    // round trip for evidence you were handed.
+    "when the transition response itself names the resulting status, that *is* the read-back",
+    // Eight hunks exceeded diff_text; the run condensed the diff and took counts from
+    // --numstat, which is right and now written down.
+    "**When the diff is too large to pass whole, pass a condensed one — and then stop trusting its counts.**",
+    // `locked` was missing from the terminal-state list the tool enforces.
+    "/ `locked`. The last three all raise a `terminal-state` blocker",
+    // --- Conflict handling had detection and a gate but no exit: nothing confirmed
+    // --- the conflict cleared, and resolution hunks had no attribution basis of
+    // --- their own, so they passed Step 7 only by laundering through `approved_files`.
+    "**Resolution files go in `conflict_files`, never in `approved_files`.**",
+    "**A file in `mixedFiles` carries both, and that's the case to split.**",
+    "**Confirm the conflict actually cleared — from GitLab, after the push.**",
+    "**If this run resolved a conflict, re-read the MR payload after the push**",
+    // --- MR !508: the skill activated, was judged inapplicable ("designed for
+    // --- reviewing comments rather than fixing conflicts"), and set aside. The run
+    // --- improvised — no brief, no gate, eight ungated edits, a --no-verify commit,
+    // --- none of the bundled tools. The gap was at the door, not in the workflow.
+    "## Step 0b — Decide what the run is for, then pick the lane",
+    "**If this file seems not to describe the task, read Step 0b before concluding that — and never improvise a run around it.**",
+    "**Pick from what the user said, not from what the payload says.**",
+    "**The lane changes the middle of the run. It never changes which gates exist.**",
+    "### The resolution plan gate (conflict-first lane, replaces Step 5)",
+    "**Beyond a mechanical pick:**",
+    '**The "Beyond a mechanical pick" row is the one that matters, and it is not optional.**',
+    "**Never start the merge or rebase before this gate closes.**",
+    "it reports conflicts **without** touching the working tree",
+    "**A dirty tree or a branch switch is a bigger deal in this lane, not a smaller one.**",
+    // The review-lane conflict section has to say it's the review lane, or the
+    // two conflict paths read as contradicting each other.
+    "**This section is the review lane, where a conflict arrives uninvited.**",
+    '**If they choose "resolve first", the run switches to the conflict-first lane**',
+    // `conflicts` and `zero-comments` stop the review lane but not this one, and the
+    // tool still raises them — so the skill says what they mean here rather than
+    // leaving the run to suppress them silently.
+    "**Two of `triage_mr_payload`'s blockers mean something different in this lane, and neither is suppressed — both get *reinterpreted out loud*.**",
+    "Here it stops nothing: an MR can have a conflict and no feedback at all",
+    "Do **not** treat this as licence to skip `reconcile_discussion_counts`",
+    "Every other blocker (wrong project, terminal state) means exactly what it means in the review lane",
+    // Two online paths the workflow didn't know about (verified against
+    // docs.gitlab.com): the rebase endpoint fixes behind-but-clean in one call, and
+    // the UI resolver isn't reachable from /api/v4/ at all — offer it, never attempt it.
+    "### Before planning a local merge: two cheaper paths",
+    "**1. Is it actually a conflict, or is the branch just behind?**",
+    "merge_requests/{iid}/rebase",
+    '"merge_error": "Rebase failed. Please rebase locally"',
+    "**Its documented prerequisite is that no conflicts exist**",
+    "**2. Could GitLab resolve it online instead?**",
+    "under 200 KB once conflict markers are added",
+    "free of pre-existing conflict markers",
+    "present at the same path on both branches",
+    "**You cannot drive any of that yourself, and must not claim to have.**",
+    "it has no parameter for a second parent",
+    "Steps 7–9 drop out and the verification doesn't.",
+    // A local merge exiting 0 is not evidence about the MR: GitLab recomputes
+    // has_conflicts asynchronously against the current target branch.
+    "tells you the merge succeeded locally, not that the MR can merge",
+    "`checking` / `unchecked`** — GitLab hasn't finished recomputing. That is not a pass.",
   ])
-    truthy(`workflow: contains ${phrase}`, skill.includes(phrase));
+    truthy(`workflow: contains ${phrase}`, corpus.includes(phrase));
+}
+
+/**
+ * Wording that must be gone. Every entry is a rule that moved, was replaced, or was
+ * disproved by a run — and the risk each covers is an old copy surviving somewhere the
+ * rewrite didn't look, which is why most of these check the whole corpus rather than
+ * SKILL.md alone.
+ */
+function assertStaleWordingGone(docs) {
+  const { skill, corpus, power, readme } = docs;
+
+  // Duplicated rules now reference one home instead of restating it.
+  for (const stale of [
+    "Mention it in your Step 2 recap",
+    "one line each in your Step 2 recap",
+    'See the latest commit."',
+    // Transition-then-ask wording: all three assert a status as written at a point
+    // where, under the current ordering, no write has happened.
+    "is now **{resulting status}**",
+    "This line is the first time the resulting Jira status appears anywhere in the conversation",
+    "**Do not report this success as its own message.**",
+    // MR !491: the brief was licensed to continue in the same turn, which buried it.
+    "the brief is mandatory output rather than a pause, so it never waits for a reply",
+    "→ **Emit the brief.**",
+    // The flat report shape, where every thread got an identical block and the header
+    // led with resolve state instead of with how much of the user's attention it costs.
+    "thread(s) to triage — {X} unresolved",
+    "**1. [✅ Fix] `{file}:{line}`**",
+    "**The header is two lines because the numbers measure different things**",
+    // MR !491 round two: the brief/report split itself, the resolved-thread zone that
+    // led the second message, and the Jira row asked as its own question.
+    "### The MR brief comes first",
+    "→ **Emit the brief and stop.**",
+    "### 👉 Needs your call ({needsYou})",
+    "### ✔️ Already addressed ({handled})",
+    "{handled}",
+    "→ **Proposed action:**",
+    "Move it to **{exact active status}** when I start on these? (yes / leave it)",
+    // A report written before any file is opened cannot claim it verified anything.
+    "I confirmed each fix is present in the code as it stands",
+    // Replaced by scripts/. Either hand-written form reappearing means the run is
+    // improvising a command whose failure modes are already documented.
+    'echo "---DIRTY---"',
+    "**separated by labelled echoes**, not bare `;`",
+  ]) {
+    // Corpus, not SKILL.md: stale wording must be gone everywhere, and a
+    // reference file is exactly where an old copy could survive unnoticed.
+    falsy(`workflow: stale duplicate removed — ${stale.slice(0, 40)}`, corpus.includes(stale));
+  }
+
+  // The hand-derivation steps that contradicted the tool must stay gone.
+  for (const stale of [
+    "1. Drop activity-log noise: keep only notes where `system == false`",
+    "2. Compare your remaining **note** count against `user_notes_count`",
+    "`gitHooks.prePushContent`",
+  ]) {
+    falsy(`workflow: no longer instructs the pre-tool method — ${stale.slice(0, 48)}`, corpus.includes(stale));
+  }
+
+  // The old hand-derivation placeholders must not come back alongside the tool.
+  for (const stale of ["{threads_total}", "{reviewer_notes}", "{notes_total}"]) {
+    falsy(`workflow: report template no longer uses the stale placeholder ${stale}`, corpus.includes(stale));
+  }
 
   for (const [label, text, forbidden] of [
     ["workflow", skill, "Pushed with `--no-verify`"],
@@ -224,10 +996,32 @@ function testWorkflowPolicyContracts() {
     ["power", power, "including a bare '#note_' link"],
     ["power", power, "no ticket transitions"],
     ["README", readme, "only if you want Step 11's time"],
+    // MR !491 round two collapsed the brief into the report, so the count goes back
+    // to six — and neither doc may still promise two messages before the first edit.
+    ["power", power, "seven possible approval gates"],
+    ["README", readme, "seven possible gates"],
+    ["power", power, "It tells you what it found before it starts working"],
+    ["power", power, "presents the triage report rather than interrupting first"],
+    ["power", power, "## It tells you what it found, then waits"],
+    ["README", readme, "It opens with a brief, not with silence"],
+    // The comments-only framing is what got the skill set aside on MR !508 — the H1
+    // and the twelve-rule heading both have to be gone.
+    ["workflow", skill, "# MR Workflow — Addressing Review Comments"],
+    ["workflow", skill, "## The twelve rules that matter most"],
+    ["workflow", skill, "End-to-end workflow for GitLab merge request review comments"],
   ])
     truthy(`${label}: excludes stale policy ${forbidden}`, !text.includes(forbidden));
+}
 
-  truthy("plugin: Jira lifecycle release is 1.3.0", plugin.includes('"version": "1.3.0"'));
+/**
+ * What POWER.md, README.md and plugin.json promise. These are presence checks rather than
+ * orderings: the risk they cover is a doc still advertising a flow the skill no longer has,
+ * which is how "then it investigates" survived a rewrite once.
+ */
+function assertDocClaims(docs) {
+  const { power, readme, plugin, powerFlat, readmeFlat } = docs;
+
+  truthy("plugin: bundled-server release is 1.5.0", plugin.includes('"version": "1.5.0"'));
   truthy("power: activation requires a full MR URL", power.includes("full GitLab merge request URL"));
   truthy(
     "power: documents Jira pre-check",
@@ -242,46 +1036,127 @@ function testWorkflowPolicyContracts() {
   );
   truthy("README: no-verify stays private", readme.includes("private execution detail"));
 
-  const outputDiscipline = skill.indexOf("## Internal discovery is not a user-facing report");
-  const formatting = skill.indexOf("## Formatting every report to the user");
-  const parseUrl = skill.indexOf("## Step 0 — Parse the MR URL");
+  // MR !491: both docs advertised the opener without saying it waits, so "then it
+  // investigates" could be taken literally. Round two collapsed brief+report into one,
+  // so both must now describe a single opening message rather than a two-step reveal.
   truthy(
-    "workflow: output discipline precedes formatting rules and the first step",
-    outputDiscipline >= 0 && outputDiscipline < formatting && formatting < parseUrl,
+    "power: counts the report as the one pre-work gate",
+    power.includes("six possible approval gates: the opening report"),
   );
-
-  const mrDetails = skill.indexOf("## Step 2 — Fetch MR Details");
-  const jiraStart = skill.indexOf("## Step 2.5 — Verify the Jira Ticket");
-  const checkout = skill.indexOf("## Step 3 — Check Out the Right Branch");
+  truthy("README: counts six gates", readme.includes("six possible gates"));
   truthy(
-    "workflow: MR evidence then Jira verification before checkout",
-    mrDetails >= 0 && mrDetails < jiraStart && jiraStart < checkout,
+    "power: states the report ends its turn",
+    powerFlat.includes("**Then it stops.** No checkout, no Jira write, no file read goes out in the same turn."),
   );
+  truthy(
+    "README: states the report ends its turn",
+    readmeFlat.includes("the turn ends and it waits for your go-ahead"),
+  );
+  truthy(
+    "README: nothing slow runs before the report is answered",
+    readme.includes(
+      "Never checks out a branch, moves the Jira ticket, or opens a referenced file before the report has been answered",
+    ),
+  );
+  // The property that makes one report possible at all, in both docs.
+  truthy(
+    "power: says the report makes no claim about the code",
+    powerFlat.includes("it makes no claim about\nyour code.".replace(/\s+/g, " ")),
+  );
+  truthy(
+    "README: says the report makes no claim about the code",
+    readmeFlat.includes("it makes no claim about your\ncode.".replace(/\s+/g, " ")),
+  );
+  // And that resolved threads are not itemised, which is what the user asked for.
+  truthy(
+    "power: resolved threads are one not-re-checked count",
+    powerFlat.includes("It doesn't list the threads GitLab has already resolved"),
+  );
+  truthy(
+    "README: resolved threads are one not-re-checked count",
+    readmeFlat.includes("it won't list the threads GitLab has already resolved"),
+  );
+}
 
-  // The active-development transition itself is deliberately deferred past checkout
-  // (it's applied in Step 7, after Step 6 approval) — only identity/terminal-status
-  // verification is gated before checkout. Assert that deferral is real, not that the
-  // transition happens early.
-  const applyTransition = skill.indexOf("### First: apply the Jira transition, if it was approved");
+/**
+ * Steps 1–4 are one index table, procedure in references/investigating.md. The ordering
+ * that matters — MR evidence, Jira identity, then classification, all before the report,
+ * and the checkout only after it — is the row order plus the heading order, so both get
+ * asserted rather than headings that no longer exist.
+ */
+function assertInvestigateOrdering(docs, m) {
+  const { skill, refs } = docs;
+  const { investigate, reportGate, startWork, idxTable, rowMr, rowJira } = m;
+
+  const rowClassify = idxTable.indexOf("**4 — Classify**");
+  truthy(
+    "workflow: MR evidence, then Jira verification, then classification — all before the report",
+    investigate > 0 && rowMr > 0 && rowMr < rowJira && rowJira < rowClassify && reportGate > investigate,
+  );
+  truthy("workflow: the checkout and the code reads sit after the report, not before it", startWork > reportGate);
+  // The claim has to be the true one: a fixed handful of local reads is fine, the
+  // per-thread reads that scale are what must wait. An absolute "no project file"
+  // would be contradicted by Step 1's own conditional read.
+  truthy(
+    "workflow: Steps 1–4 open no file a comment points at, which is what makes the report cheap",
+    skill
+      .slice(investigate, reportGate)
+      .includes(
+        "**None of these four steps opens a file a comment points at, checks out a branch, or writes anything.**",
+      ),
+  );
+  truthy(
+    "workflow: the investigate index points at its procedure file",
+    idxTable.includes("references/investigating.md"),
+  );
+  // `checkout` still anchors the "everything before code work" boundary below.
+  const checkout = startWork;
+
+  // Only identity/terminal-status verification precedes the report; the
+  // active-development transition is applied in Step 6, after Step 5's approval, and
+  // before the first code read — not after the diff is written.
+  const applyTransition = skill.indexOf("**Apply the Jira transition — only if Step 5's line was approved.**");
   const step7 = skill.indexOf("## Step 7 — Fix One Comment at a Time");
   truthy(
-    "workflow: active-development transition is applied in Step 7, after checkout and approval",
-    applyTransition > checkout && applyTransition > step7,
+    "workflow: active-development transition is applied in Step 6, after approval and before any edit",
+    applyTransition > reportGate && applyTransition > checkout && applyTransition < step7,
   );
 
-  const noKeyStop = skill.indexOf("**No key**", jiraStart);
-  const manualToolStop = skill.indexOf("If Atlassian tools are unavailable, ask once", jiraStart);
+  // The branch table moved to references/jira.md, but "terminal, blocked, or no
+  // unambiguous ticket stops the run" is a stop condition and must stay resident.
   truthy(
     "workflow: missing Jira identity and unavailable tooling fail closed before checkout",
-    noKeyStop > jiraStart && noKeyStop < checkout && manualToolStop > jiraStart && manualToolStop < checkout,
+    idxTable.includes("Terminal, blocked, unclassifiable, or no unambiguous ticket"),
   );
 
-  const validation = skill.indexOf("### Definitive validation and staging");
-  const selfReview = skill.indexOf("### Self-review pass");
-  const approval = skill.indexOf("## Step 8 — Present the Final Summary");
-  const commit = skill.indexOf("## Step 9 — Commit and Push");
-  const replies = skill.indexOf("## Step 10 — Reply Inline and Resolve Each Thread");
-  const jiraFinish = skill.indexOf("## Step 11 — Return Jira to Review and Log Time");
+  // Raised at the MR fetch, ahead of the report and the checkout: the reason to
+  // surface it is that resolving a conflict can rewrite the code the comments are about.
+  truthy(
+    "workflow: conflict state is surfaced inside Step 2, before the report",
+    rowMr > 0 && rowMr < rowJira && idxTable.slice(rowMr, rowJira).includes("conflicts"),
+  );
+
+  // Step 6 moved to references/checkout.md, because it is released by the report's
+  // go-ahead and batch 1 has no use for it — and because investigating.md had grown past
+  // the size a single read reliably returns. The fetch-before-create ordering is a
+  // correctness property of those commands, so it is asserted wherever they live.
+  const checkoutRef = refs.find((r) => r.name === "checkout.md")?.text ?? "";
+  const checkoutFetch = checkoutRef.indexOf("git fetch origin {source_branch}");
+  const checkoutCreate = checkoutRef.indexOf("git checkout -b {source_branch} origin/{source_branch}");
+  truthy("workflow: fetches before creating tracking branch", checkoutFetch >= 0 && checkoutFetch < checkoutCreate);
+}
+
+/**
+ * The publish half: validate, approve, commit, reply, then synchronize Jira — and the
+ * time question last of all, ahead of the two writes it releases. Every assertion here is
+ * an ordering, because each of these steps is only safe once the previous one succeeded.
+ */
+function assertPublishOrdering(docs, m) {
+  const { skill, reporting } = docs;
+  const { approval, commit, replies, jiraFinish, timeAsk, lessons } = m;
+
+  const validation = skill.indexOf("### Validation and staging, before self-review and approval");
+  const selfReview = skill.indexOf("### Self-review pass, after all fixes and before the summary");
   truthy(
     "workflow: validate, approve, commit, reply, then synchronize Jira",
     validation >= 0 &&
@@ -292,15 +1167,19 @@ function testWorkflowPolicyContracts() {
       replies < jiraFinish,
   );
 
-  const noDirectReview = skill.indexOf("If no direct review transition exists:", approval);
-  const leaveManual = skill.indexOf("Confirm leave unchanged/manual?", noDirectReview);
-  const jiraApproval = skill.indexOf("Jira approval is independent from commit approval and time logging", approval);
+  // Step 8's template moved to references/reporting.md, but the independence rule
+  // stays resident in SKILL.md: it decides what a "yes" authorizes.
+  const noDirectReview = reporting.indexOf("If no direct review transition exists:");
+  const leaveManual = reporting.indexOf("Confirm leave unchanged/manual?", noDirectReview);
   truthy(
     "workflow: Step 8 renders and gates both reachable and unreachable Jira review outcomes before commit",
-    noDirectReview > approval && noDirectReview < leaveManual && leaveManual < jiraApproval && jiraApproval < commit,
+    noDirectReview > 0 &&
+      leaveManual > noDirectReview &&
+      reporting.includes("**Jira approval is independent from commit approval and time logging.**") &&
+      skill.slice(approval, commit).includes("commit, Jira transition, and — later — the worklog"),
   );
 
-  const publicationRecovery = skill.indexOf("### Recover safely from partial publication", replies);
+  const publicationRecovery = skill.indexOf("**Keep a per-discussion ledger**", replies);
   const remoteCompletion = skill.indexOf(
     "Resume Step 11 only after every approved action is observed remotely",
     publicationRecovery,
@@ -310,27 +1189,565 @@ function testWorkflowPolicyContracts() {
     publicationRecovery > replies && publicationRecovery < remoteCompletion && remoteCompletion < jiraFinish,
   );
 
-  const publicationGate = skill.indexOf("### Publication success is a hard precondition for review status", jiraFinish);
-  const finalReread = skill.indexOf("Call `getJiraIssue` again immediately before automated writes", jiraFinish);
-  const finalTransition = skill.indexOf("Call `transitionJiraIssue`, then re-read the issue", jiraFinish);
+  const publicationGate = skill.indexOf("**Publication success is a hard precondition.**", jiraFinish);
+  const finalReread = skill.indexOf("**Re-read the ticket immediately before any automated write.**", jiraFinish);
+  // The write itself, now anchored on the read-back rule rather than the call —
+  // the prose moved to references/jira.md but the ordering it enforces did not.
+  const finalTransition = skill.indexOf(
+    "**The write isn't finished until the server has told you what status it produced**",
+    jiraFinish,
+  );
   truthy(
     "workflow: publication success and Jira re-read precede final transition",
     publicationGate > jiraFinish && publicationGate < finalReread && finalReread < finalTransition,
   );
 
-  const noEarlyTimeAsk = skill.indexOf("Do not ask for time spent at this gate", approval);
-  const timeAsk = skill.indexOf("### Ask for time spent last, then log it", jiraFinish);
+  const noEarlyTimeAsk = skill.indexOf("**Never ask for time spent at this gate**", approval);
   const timeQuestion = skill.indexOf("How much time should I log against it?", timeAsk);
-  const lessons = skill.indexOf("## Step 12 — Optional Follow-Up: Capture Recurring Lessons");
   truthy("workflow: time is not requested at the commit gate", noEarlyTimeAsk > approval && noEarlyTimeAsk < commit);
   truthy(
-    "workflow: time is requested last, after publication and the review transition",
-    timeAsk > finalTransition && timeAsk < timeQuestion && timeQuestion < lessons,
+    "workflow: time is requested after publication, and before Step 12",
+    timeAsk > publicationGate && timeAsk < timeQuestion && timeQuestion < lessons,
   );
 
-  const checkoutFetch = skill.indexOf("git fetch origin {source_branch}");
-  const checkoutCreate = skill.indexOf("git checkout -b {source_branch} origin/{source_branch}");
-  truthy("workflow: fetches before creating tracking branch", checkoutFetch >= 0 && checkoutFetch < checkoutCreate);
+  // The transition write sits after the time question so both Jira writes share one
+  // turn. The re-read still comes first — it's what the question quotes.
+  truthy(
+    "workflow: the time question precedes the transition write, which follows the re-read",
+    finalReread < timeAsk && timeAsk < finalTransition && finalTransition < lessons,
+  );
+  const closingLine = skill.indexOf("**Then one closing line, with both results stated separately:**", timeAsk);
+  truthy(
+    "workflow: both results are reported after the write, not before it",
+    closingLine > finalTransition && closingLine < lessons,
+  );
+}
+
+/**
+ * The one-report section, stated before the first step so it reads as a standing rule
+ * rather than a Step 5 detail. Its own section has to declare the stop and scope the
+ * go-ahead: on MR !491 the batch plan said so and the section didn't, and the section is
+ * what's read when the report is composed.
+ */
+function assertReportSectionOrdering(docs, m) {
+  const { skill } = docs;
+  const { outputDiscipline, parseUrl, batches, boundedVerification, reportSection, reportMandatory } = m;
+
+  truthy(
+    "workflow: the mandatory report and the verification cap sit in output discipline, before Step 0",
+    reportMandatory > outputDiscipline && reportMandatory < boundedVerification && boundedVerification < parseUrl,
+  );
+
+  // Its section precedes the batch plan that produces it, and both precede the steps.
+  // Placed after the steps they'd read as an optimization, not the shape of the run.
+  truthy(
+    "workflow: the report's section precedes the batch plan, and both precede Step 0",
+    reportSection > outputDiscipline && reportSection < batches && batches < parseUrl,
+  );
+
+  // MR !491: the pause belongs in the report's own section, not only in the batch
+  // plan — the section is what's read when the report is composed.
+  const reportIsStop = reportMandatory;
+  const goAheadScope = skill.indexOf(
+    '**What a bare "go ahead" covers: batches 3 and 4, the Jira transition the report named, and the ✅ Fix / 🔵 Nitpick items.**',
+  );
+  truthy(
+    "workflow: the report's own section declares the stop and scopes the go-ahead, before the batch plan",
+    reportIsStop > reportSection && reportIsStop < batches && goAheadScope > reportIsStop && goAheadScope < batches,
+  );
+
+  // No leading list marker in the needle: an editor formatter rewrites `-` to `*` on
+  // save, and this asserts the line's content, not its bullet character.
+  truthy(
+    "workflow: the report is listed first among the defined gates",
+    skill.includes("The defined gates: Step 5's report"),
+  );
+
+  // Rule 3 carries one stop now. The two-message wording licensed a second round trip.
+  truthy(
+    "workflow: rule 3 states the single report is the first output and the only pre-work stop",
+    skill.includes(
+      "**One report reaches the user before any code changes. It is the run's first output and its only pre-work stop.**",
+    ) && skill.includes("Rules 1 and 3–9 are hard stops when applicable."),
+  );
+  // Rule 1 must place the Jira read before the report and the write after approval.
+  truthy(
+    "workflow: rule 1 reads Jira before the report and writes it in Step 6",
+    skill.includes("**Verify the Jira ticket before the report, silently; ask about moving it inside the report.**"),
+  );
+}
+
+/**
+ * Step 0b's lane decision. It sits between URL parsing and the first step that acts on a
+ * lane, and must be reachable by a skim of the file's top — all the MR !508 run did.
+ */
+function assertLaneOrdering(docs, m) {
+  const { skill, power, readme, powerFlat } = docs;
+  const { parseUrl, lane, profile } = m;
+
+  const cheaper = skill.indexOf("### Before planning a local merge: two cheaper paths");
+  const planGate = skill.indexOf("### The resolution plan gate (conflict-first lane, replaces Step 5)");
+  truthy(
+    "workflow: the lane decision follows URL parsing and precedes every step that acts on a lane",
+    parseUrl > 0 && lane > parseUrl && planGate > lane && planGate < profile,
+  );
+  // Read before the local plan is built, or the run spends twenty minutes on a merge
+  // a single PUT would have settled.
+  truthy(
+    "workflow: the cheaper online paths are stated before the local resolution plan",
+    cheaper > lane && cheaper < planGate,
+  );
+
+  // The H1 and the intro are what the failing run actually read before deciding.
+  truthy(
+    "workflow: the title covers both jobs rather than review comments alone",
+    skill.includes("# MR Workflow — Working an Existing Merge Request"),
+  );
+  truthy(
+    "workflow: the intro names both kinds of work before any step",
+    skill.indexOf("Two kinds of work arrive at the same URL") < lane,
+  );
+  truthy(
+    "workflow: the frontmatter description names conflict resolution as in scope",
+    skill.slice(0, skill.indexOf("\n---", 4)).includes("resolving a merge conflict"),
+  );
+  truthy(
+    "workflow: rule 13 forbids setting the file aside and improvising",
+    skill.includes("**Decide what the run is for before planning it, and don't set this file aside.**"),
+  );
+  truthy(
+    "workflow: the lane table maps every phase, including the ones that drop out",
+    [
+      "| 0–3 |",
+      "| 4 classify |",
+      "| 5 report |",
+      "| 6 |",
+      "| 6b |",
+      "| 7 |",
+      "| 8 |",
+      "| 9 |",
+      "| 10 |",
+      "| 11 |",
+    ].every((row) => skill.slice(lane, profile).includes(row)),
+  );
+  // Same stop, different contents — not a seventh gate, which would contradict the
+  // six-gate claim in both docs.
+  truthy(
+    "workflow: the plan gate replaces rule 3's report rather than adding a gate",
+    skill.includes(
+      "In the conflict-first lane rule 3's report is the resolution plan gate rather than the triage report",
+    ),
+  );
+  truthy("power: documents the two lanes and one gate set", power.includes("## Two kinds of work, one set of gates"));
+  truthy("README: documents the second job", readme.includes("**It handles two jobs, not one.**"));
+  truthy(
+    "power: documents the rebase endpoint as the behind-but-clean exit",
+    powerFlat.includes("PUT .../merge_requests/:iid/rebase` endpoint in one call"),
+  );
+  truthy(
+    "power: states the online resolver has no REST endpoint rather than implying it does",
+    powerFlat.includes("there is no `/api/v4/` endpoint for the web conflict resolver"),
+  );
+  truthy(
+    "README: offers the browser path instead of deciding a local merge",
+    readme.includes("you're offered the browser path") &&
+      readme.includes("there's no REST endpoint for the web resolver"),
+  );
+}
+
+/**
+ * Step 5's report template. Every rendered field must come from batches 1–2 — that's what
+ * makes the report cheap enough to send first. The Jira status is included now, because
+ * the ticket is read in batch 2; what stays out is anything requiring a project file.
+ */
+function assertReportTemplateShape(docs) {
+  const { reporting } = docs;
+
+  const reportTemplate = reporting.slice(
+    reporting.indexOf("## Step 5 — the report"),
+    reporting.indexOf("### The fixed marker set"),
+  );
+  for (const field of [
+    "{countLine, verbatim",
+    "{X} unresolved / {Y} resolved on GitLab",
+    "{TICKET-KEY}` — **{exact current status}**",
+    "{source_branch}",
+    "**Blockers:**",
+    "**Flags:**",
+    // The closing list is the gate: it names every action a go-ahead authorizes, in
+    // execution order, with the Jira move as one of them rather than a second question.
+    "**Say go and I'll:**",
+    "Move `{TICKET-KEY}` from **{current status}** to **{exact active status}**",
+    "Stop again before anything is committed, pushed or replied to",
+  ]) {
+    truthy(`report template: renders ${field}`, reportTemplate.includes(field));
+  }
+  // The two forbidden shapes are checked against the fenced block alone — the prose
+  // around it necessarily names both in order to forbid them.
+  const reportFence = reportTemplate.slice(
+    reportTemplate.indexOf("```text"),
+    reportTemplate.indexOf("```", reportTemplate.indexOf("```text") + 7),
+  );
+  truthy("report template: the fenced template block was found", reportFence.length > 200);
+  falsy("report template: never itemises resolved threads", /✔️|Already addressed/.test(reportFence));
+  falsy("report template: never proposes a code change it hasn't verified", /Proposed action/.test(reportFence));
+}
+
+/**
+ * The four-batch plan. Each batch has to name what goes in it, and the report has to sit
+ * between batch 2 and batch 3 — emitting it after the checkout is the observed failure.
+ */
+function assertBatchPlanShape(docs, m) {
+  const { skill } = docs;
+  const { batches, boundedVerification } = m;
+
+  const batchBlock = skill.slice(batches, boundedVerification);
+  for (const marker of [
+    "**Batch 1 —",
+    "**Batch 2 —",
+    "**Batch 3 —",
+    "**Batch 4 —",
+    "→ **Emit the report and stop.**",
+    "getTransitionsForJiraIssue",
+    "glab_auth_status",
+    "getAccessibleAtlassianResources",
+  ]) {
+    truthy(`batch plan: names ${marker}`, batchBlock.includes(marker));
+  }
+  const emitReport = batchBlock.indexOf("→ **Emit the report and stop.**");
+  truthy(
+    "batch plan: the report is emitted after batch 2 and before batch 3",
+    emitReport > batchBlock.indexOf("**Batch 2 —") && emitReport < batchBlock.indexOf("**Batch 3 —"),
+  );
+  // The Jira read moved into batch 2 so its status can be a row in the report.
+  truthy(
+    "batch plan: the Jira read sits in batch 2, ahead of the report",
+    batchBlock.indexOf("getJiraIssue") > batchBlock.indexOf("**Batch 2 —") &&
+      batchBlock.indexOf("getJiraIssue") < batchBlock.indexOf("**Batch 3 —"),
+  );
+
+  // MR !491: batch 3 followed the opener in the same turn. The wait is stated in both
+  // places, or "batch 3 is next" reads as "now".
+  truthy(
+    "batch plan: batch 2 ends the turn on the report",
+    batchBlock.includes("End the turn there; batch 3 waits for the reply."),
+  );
+  truthy(
+    "batch plan: batch 3 is gated on the reply, not merely ordered after the report",
+    batchBlock.includes("**Batch 3 — what the go-ahead unblocked.** One turn, *after* the user answers the report:"),
+  );
+  // The checkout and the transition share batch 3, and the code reads wait for batch 4.
+  truthy(
+    "batch plan: batch 3 carries the checkout and the transition, batch 4 the code reads",
+    batchBlock.includes("**Batch 3 — what the go-ahead unblocked.**") &&
+      batchBlock
+        .slice(batchBlock.indexOf("**Batch 3 —"), batchBlock.indexOf("**Batch 4 —"))
+        .includes("the approved Jira transition") &&
+      batchBlock.slice(batchBlock.indexOf("**Batch 4 —")).includes("must follow the checkout"),
+  );
+}
+
+/**
+ * Document-level layout: the standing rules sit above the steps and the pointers sit
+ * below them. Order carries meaning here, which is why these are position comparisons
+ * rather than presence checks.
+ */
+function assertLayoutOrdering(docs, m) {
+  const { skill } = docs;
+  const { outputDiscipline, formatting, parseUrl, jiraFinish, timeAsk, lessons } = m;
+
+  truthy(
+    "workflow: output discipline precedes formatting rules and the first step",
+    outputDiscipline >= 0 && outputDiscipline < formatting && formatting < parseUrl,
+  );
+
+  // Step 11's re-read must be stated before the time-log ask that depends on it.
+  const rereadCoversWorklog = skill.indexOf("This applies even when no transition is needed");
+  truthy(
+    "workflow: the worklog-path re-read is stated before the time-log question",
+    rereadCoversWorklog > jiraFinish && rereadCoversWorklog < timeAsk,
+  );
+
+  // Order carries the meaning: stated after the cases, invariants read as an
+  // afterthought rather than the frame those cases instantiate.
+  const invariants = skill.indexOf("## Five invariants. Everything else is an instance of them.");
+  const numberedRules = skill.indexOf("## The thirteen rules that matter most");
+  const uncovered = skill.indexOf("## When this skill doesn't cover what you're looking at");
+  truthy(
+    "workflow: invariants frame the numbered rules rather than trailing them",
+    invariants >= 0 && numberedRules > 0 && invariants < numberedRules,
+  );
+  truthy(
+    "workflow: the uncovered-case protocol is stated before the first step",
+    uncovered > numberedRules && uncovered < parseUrl,
+  );
+
+  // The index that replaces both appendices sits after the last step and before the
+  // Quick Reference: a pointer table above the workflow gets read as the workflow.
+  const refIndex = skill.indexOf("## Reference files — load these when the pointer says to");
+  const quickRef = skill.indexOf("## Quick Reference");
+  truthy(
+    "workflow: the reference index sits after the last step and before the Quick Reference",
+    refIndex > lessons && quickRef > refIndex,
+  );
+}
+
+/**
+ * `fetch-mr.mjs` composes triage + counts locally now, instead of printing a ~10 KB
+ * payload for the caller to hand back to `triage_graphql_mr`. That round trip went out
+ * through the model and back, which cost more than the fetch and, on a real run,
+ * failed outright: the argument arrived as a string instead of an object, and the
+ * recovery was to start trimming note fields — the same way `resolvable` has been
+ * dropped before, reached by a different road.
+ *
+ * Two call sites for one answer is invariant 4's shape, so this pins them together.
+ */
+function testLocalTriageParity() {
+  const scriptPath = join(ROOT, "skills", "mr-comments", "scripts", "fetch-mr.mjs");
+  const script = readFileSync(scriptPath, "utf8");
+  const server = readFileSync(join(ROOT, "server", "server.js"), "utf8");
+
+  // Dynamic, not static: a static import of ../../../server/ breaks the moment this
+  // skill folder is used on its own, which is the property the duplicated MR_QUERY
+  // exists to protect.
+  for (const mod of ["graphql.js", "mr-payload.js", "discussions.js"]) {
+    truthy(`local triage: imports ${mod} dynamically`, script.includes(`import(new URL("${mod}", dir).href)`));
+  }
+  falsy(
+    "local triage: no static import of the server modules",
+    /^import .* from ["']\.\.\/\.\.\/\.\.\/server\//m.test(script),
+  );
+  // Absent is supported and quiet; present-but-broken must be loud, or a wiring bug
+  // silently downgrades every run to the expensive path with nothing to show why.
+  truthy("local triage: only a missing file degrades quietly", script.includes('err?.code === "ERR_MODULE_NOT_FOUND"'));
+  truthy("local triage: --raw restores the payload-printing behaviour", script.includes('has("raw")'));
+
+  // The script must route through the modules, never re-derive their answers. Any
+  // counting of its own is the hand-tally failure moved into a file where nobody
+  // reviews it against the tool.
+  for (const re of [/notes\s*\.\s*filter/, /\.system\s*===/, /resolvable\s*===/]) {
+    falsy(`local triage: does not re-derive counts itself (${re})`, re.test(script));
+  }
+
+  // Same three functions, same argument names as the MCP handler. A field added to one
+  // and not the other is the realistic drift, and it would show up as two different
+  // answers for the same MR depending on which path ran.
+  const handler = server.slice(
+    server.indexOf("triage_graphql_mr: (args)"),
+    server.indexOf("attribute_staged_hunks: (args)"),
+  );
+  // Matched on the property name alone: either side may legitimately use shorthand
+  // (`noteIdFromUrl,`) where the other spells it out (`noteIdFromUrl: args.…`). What
+  // must not differ is *which* inputs get passed.
+  for (const arg of ["workspaceRemote", "currentUser", "userNotesCount", "noteIdFromUrl", "discussions"]) {
+    const named = new RegExp(String.raw`\b${arg}\s*[:,}]`);
+    truthy(`local triage: passes ${arg} exactly as the MCP handler does`, named.test(handler) && named.test(script));
+  }
+  // Every key the tool returns must also appear in what the script prints, or a caller
+  // switching paths loses a field.
+  for (const key of ["triage:", "counts:", "discussions,", "hasNextPage,", "endCursor,"]) {
+    truthy(`local triage: emits the tool's ${key}`, script.includes(key));
+  }
+
+  // The relative path the script imports from has to resolve, or `loadChecks` returns
+  // null forever and every run silently takes the expensive path.
+  for (const mod of ["graphql.js", "mr-payload.js", "discussions.js"]) {
+    truthy(`local triage: ${mod} exists where ../../../server/ resolves to`, existsSync(join(ROOT, "server", mod)));
+  }
+
+  // Functional: the composition really does produce a verdict rather than throwing,
+  // and the numbers are the tool's numbers. Uses the statically imported modules —
+  // the same code the script loads.
+  const fixture = {
+    data: {
+      project: {
+        mergeRequest: {
+          iid: "491",
+          title: "fix(BIDAYA-2084): add text truncation",
+          state: "opened",
+          sourceBranch: "fix/BIDAYA-2084",
+          targetBranch: "develop",
+          userNotesCount: 2,
+          conflicts: false,
+          mergeStatusEnum: "CAN_BE_MERGED",
+          detailedMergeStatus: "MERGEABLE",
+          draft: false,
+          webUrl: "https://git.example.net/a/b/repo/-/merge_requests/491",
+          author: { username: "jane.doe" },
+          assignees: { nodes: [{ username: "jane.doe" }] },
+          discussions: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                id: "gid://gitlab/Discussion/abc",
+                notes: {
+                  nodes: [
+                    {
+                      id: "gid://gitlab/Note/1",
+                      system: false,
+                      resolvable: true,
+                      resolved: false,
+                      body: "needs an id",
+                      createdAt: "",
+                      author: { username: "hodei" },
+                      position: { newPath: "a.html", newLine: 12 },
+                    },
+                  ],
+                },
+              },
+              {
+                id: "gid://gitlab/Discussion/def",
+                notes: {
+                  nodes: [
+                    {
+                      id: "gid://gitlab/Note/2",
+                      system: false,
+                      resolvable: true,
+                      resolved: true,
+                      body: "done",
+                      createdAt: "",
+                      author: { username: "hodei" },
+                      position: { newPath: "a.scss", newLine: 3 },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+
+  const { mr, discussions, hasNextPage } = normalizeGraphqlMr(fixture);
+  const triage = triageMrPayload({
+    mr,
+    workspaceRemote: "git@git.example.net:a/b/repo.git",
+    currentUser: "jane.doe",
+  });
+  const counts = reconcileDiscussionCounts({
+    discussions,
+    userNotesCount: mr.user_notes_count,
+    currentUser: "jane.doe",
+  });
+
+  eq("local triage: composes a real verdict", triage.proceed, true);
+  eq("local triage: nothing undetermined once the script supplies both inputs", triage.undetermined, []);
+  eq("local triage: reconciles against user_notes_count", counts.reconciles, true);
+  eq("local triage: splits resolved from unresolved", [counts.unresolvedThreads, counts.resolvedThreads], [1, 1]);
+  eq("local triage: gids are stripped for Step 10's replies", discussions[0].id, "abc");
+  falsy("local triage: the fetch was complete", hasNextPage);
+}
+
+/**
+ * Executable resolution (CWE-426, untrusted search path).
+ *
+ * `execFileSync("git", …)` lets the OS resolve the name at spawn time against whatever
+ * `PATH` holds, so a writable directory earlier in `PATH` substitutes its own binary.
+ * The earlier mitigation — `where`/`which` then fall back to the bare name — closed
+ * neither half: the finder is itself found on `PATH`, and the fallback handed the lookup
+ * straight back to spawn time.
+ *
+ * Both scripts now resolve in-process, skip non-absolute `PATH` entries, and fail rather
+ * than degrade to a bare name. Asserted textually *and* behaviourally, because the whole
+ * point is what happens with a hostile `PATH`.
+ */
+function testExecutableResolution() {
+  const scriptsDir = join(ROOT, "skills", "mr-comments", "scripts");
+  /**
+   * Comments are stripped before any code-shape assertion. Both scripts *document* the
+   * forbidden `execFileSync("git", …)` form in order to explain why it's forbidden, and
+   * a scan that can't tell prose from code fires on the explanation.
+   */
+  const stripComments = (src) =>
+    src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split(/\r?\n/)
+      .filter((l) => !/^\s*(\/\/|\*)/.test(l))
+      .join("\n");
+
+  const sources = ["fetch-mr.mjs", "git-context.mjs"].map((name) => {
+    const text = readFileSync(join(scriptsDir, name), "utf8");
+    return { name, text, code: stripComments(text) };
+  });
+
+  for (const { name, text, code } of sources) {
+    // A resolved binary is always held in a variable, so any string literal in the
+    // first argument position is a bare command name. `exec`/`execSync` are excluded
+    // from the pattern and forbidden at the import instead — `.exec(` on a RegExp is
+    // unrelated and would make this assertion fire on every regex match in the file.
+    falsy(`exec[${name}]: never spawns a bare command name`, /(?:execFileSync|spawnSync)\(\s*["'`]/.test(code));
+    const imported = /import \{([^}]*)\} from "node:child_process"/.exec(code)?.[1] ?? "";
+    eq(
+      `exec[${name}]: imports no shell-string spawner`,
+      imported
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s === "exec" || s === "execSync"),
+      [],
+    );
+    // The old mitigation, in both its halves.
+    falsy(
+      `exec[${name}]: does not resolve through a PATH-found where/which`,
+      /\bplatform === "win32" \? "where"/.test(code),
+    );
+    falsy(`exec[${name}]: has no bare-name fallback`, /return "(?:git|glab)";/.test(code));
+
+    truthy(`exec[${name}]: resolves in-process`, code.includes("function resolveBin(name, envVar)"));
+    // The step the OS would not take, and the one that actually answers the finding.
+    truthy(`exec[${name}]: skips non-absolute PATH entries`, code.includes("if (!dir || !isAbsolute(dir)) continue;"));
+    truthy(`exec[${name}]: honours an absolute pin`, /isAbsolute\(pinned\) && fileExists\(pinned\)/.test(code));
+    // Windows needs PATHEXT, or an extensionless probe finds nothing and the script
+    // reports "not found" on a machine that has the binary.
+    truthy(`exec[${name}]: applies PATHEXT on Windows`, code.includes("PATHEXT"));
+    // The comment must not overclaim: nothing here proves a directory is unwriteable.
+    truthy(`exec[${name}]: does not claim to verify directory writability`, text.includes("does **not** claim"));
+  }
+
+  // Duplicated rather than shared, because a third file under scripts/ breaks the
+  // layout the spec test pins. Invariant 4 allows that only with this assertion.
+  const body = (text) =>
+    text
+      .slice(text.indexOf("function resolveBin(name, envVar) {"), text.indexOf("\nfunction fileExists(p) {"))
+      .replace(/\s+/g, " ")
+      .trim();
+  truthy("exec: both copies of resolveBin were located", body(sources[0].text).length > 200);
+  eq("exec: the two copies of resolveBin have not drifted", body(sources[0].text), body(sources[1].text));
+
+  // --- Behavioural. git-context.mjs is the cheap one to drive: no network.
+  const script = join(scriptsDir, "git-context.mjs");
+  const spawn = (env) => {
+    const r = spawnSync(process.execPath, [script], {
+      encoding: "utf8",
+      env: { ...process.env, ...env },
+    });
+    return { status: r.status, err: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  };
+
+  // The attack vector itself: `.` on PATH means the current directory, which is
+  // writable. The OS would honour it; this must not.
+  const relativeOnly = spawn({ PATH: ".", GIT_PATH: "" });
+  eq("exec: a PATH of only '.' resolves nothing", relativeOnly.status, 1);
+  truthy(
+    "exec: and says so rather than trying a bare name",
+    relativeOnly.err.includes("not found in any absolute PATH directory"),
+  );
+
+  const emptyPath = spawn({ PATH: "", GIT_PATH: "" });
+  eq("exec: an empty PATH fails loudly", emptyPath.status, 1);
+
+  // A relative pin is a pin an attacker could satisfy from the cwd, so it is refused
+  // outright rather than falling through to the search.
+  const relativePin = spawn({ GIT_PATH: "git" });
+  eq("exec: a non-absolute GIT_PATH is rejected", relativePin.status, 2);
+  truthy("exec: and names the variable", relativePin.err.includes("GIT_PATH must be an absolute path"));
+
+  const missingPin = spawn({ GIT_PATH: join(ROOT, "no-such-git-binary") });
+  eq("exec: a GIT_PATH pointing at nothing is rejected", missingPin.status, 2);
+
+  // And the happy path still works, or all of the above is just a broken script.
+  const ok = spawn({});
+  eq("exec: a normal environment still resolves git", ok.status, 0);
 }
 
 /** Pull the keyword flow-sequence out of a POWER.md frontmatter block. */
@@ -341,12 +1758,9 @@ function powerKeywords(text) {
 }
 
 /**
- * POWER.md's frontmatter and plugin.json each carry a keyword list, by hand,
- * describing the same thing. Two hand-maintained copies of one fact is the
- * drift shape this suite exists to catch: a keyword edited in one file and not
- * the other changes activation behaviour without failing anything. Observed —
- * a trailing-underscore cleanup landed in POWER.md while plugin.json kept the
- * old spelling.
+ * POWER.md and plugin.json each hand-maintain the same keyword list — invariant 4's
+ * drift shape, where a keyword edited in one changes activation without failing
+ * anything. Observed: a cleanup landed in POWER.md while plugin.json kept the old spelling.
  */
 function testKeywordParity() {
   const power = readFileSync(join(ROOT, "POWER.md"), "utf8");
@@ -357,21 +1771,38 @@ function testKeywordParity() {
   truthy("keywords: plugin.json declares a keyword list", Array.isArray(manifest) && manifest.length > 0);
   if (!declared || !manifest) return;
 
-  eq("keywords: POWER.md and plugin.json list the same keywords", [...declared].sort(), [...manifest].sort());
+  // Sorting was only a way to compare two unordered lists, and it reported drift as two
+  // fifteen-element arrays to diff by eye. The observed failure is a rename — a keyword
+  // edited in one file and not the other — so ask directionally and name the keyword.
+  eq(
+    "keywords: POWER.md lists nothing plugin.json is missing",
+    declared.filter((k) => !manifest.includes(k)),
+    [],
+  );
+  eq(
+    "keywords: plugin.json lists nothing POWER.md is missing",
+    manifest.filter((k) => !declared.includes(k)),
+    [],
+  );
   eq("keywords: POWER.md has no duplicates", declared.length, new Set(declared).size);
   eq("keywords: plugin.json has no duplicates", manifest.length, new Set(manifest).size);
+
+  // MR !508 reached this power by URL alone. Conflict wording has to be able to
+  // reach it too, or the conflict-first lane is only findable by accident.
+  for (const kw of ["merge-conflict", "conflict", "resolve-conflict"]) {
+    truthy(`keywords: conflict work is discoverable via "${kw}"`, declared.includes(kw));
+  }
 }
 
 /**
- * Regression test for the fabrication-shape bug: a discovered self-review
- * checklist reported as a completed result ("no BEM violations", "checked
- * against X") instead of the open question the template requires. This
- * doesn't prove the agent won't fabricate at runtime — prose can't guarantee
- * that — but it does mechanically catch someone editing the *template itself*
- * back into a non-question, completed-result shape without noticing.
+ * Fabrication shape: a self-review checklist reported as a completed result ("no BEM
+ * violations", "checked against X") instead of the open question the template needs.
+ * This can't stop runtime fabrication, but it catches the *template* being edited
+ * back into a completed-result shape.
  */
 function testSelfReviewTemplateShape() {
-  const skill = readFileSync(join(ROOT, "skills", "mr-comments", "SKILL.md"), "utf8");
+  // The card lives in references/reporting.md, so the assertion follows it.
+  const skill = loadSkillCorpus().refs.find((r) => r.name === "reporting.md")?.text ?? "";
 
   const bulletMarker = "{Found `{path}`";
   const bulletStart = skill.indexOf(bulletMarker);
@@ -382,15 +1813,17 @@ function testSelfReviewTemplateShape() {
   const lineEnd = skill.indexOf("\n", bulletStart);
   const bullet = skill.slice(bulletStart, lineEnd);
 
-  truthy("self-review template: bullet offers both a found-resource and a nothing-found branch", bullet.includes(" / "));
+  truthy(
+    "self-review template: bullet offers both a found-resource and a nothing-found branch",
+    bullet.includes(" / "),
+  );
 
   const [foundBranch, nothingBranch] = bullet.split(" / ");
   truthy("self-review template: found-resource branch ends in a question mark", /\?\}?\s*$/.test(foundBranch.trim()));
   truthy("self-review template: nothing-found branch ends in a question mark", /\?\}?\s*$/.test(nothingBranch.trim()));
 
-  // The template placeholder must never itself read like a completed result —
-  // that's the exact shape of the observed fabrication ("no BEM violations",
-  // "checked against X, no issues found") that skipped the open question.
+  // The placeholder must never itself read like a completed result — that's the shape
+  // of the observed fabrication that skipped the open question.
   const fabricationPhrases = [
     "no issues found",
     "no new issues",
@@ -407,14 +1840,1263 @@ function testSelfReviewTemplateShape() {
   }
 }
 
+// ---------- MR payload triage ----------
+
+/**
+ * Motivating regression: a run had `has_conflicts: true` and
+ * `detailed_merge_status: "conflict"` in the fetched payload and mentioned neither.
+ * Fixtures are payload shapes, so no GitLab access is needed.
+ */
+function testMrPayloadTriage() {
+  const base = {
+    iid: 500,
+    title: "fix(BIDAYA-699): Issues when rejecting location",
+    source_branch: "fix/BIDAYA-699-Issues-when-rejecting-location",
+    target_branch: "develop",
+    state: "opened",
+    user_notes_count: 19,
+    web_url: "https://git.example.net/retail/bidaya/frontend/bidaya/-/merge_requests/500",
+    author: { username: "jane.doe" },
+    assignees: [{ username: "jane.doe" }],
+  };
+  const remote = "git@git.example.net:retail/bidaya/frontend/bidaya.git";
+
+  const clean = triageMrPayload({ mr: base, workspaceRemote: remote, currentUser: "jane.doe" });
+  eq("triage[clean MR]: proceeds", clean.proceed, true);
+  eq("triage[clean MR]: no blockers", clean.blockers, []);
+  eq("triage[clean MR]: nothing undetermined", clean.undetermined, []);
+  eq("triage[clean MR]: parses the ticket key", clean.facts.ticketKey, "BIDAYA-699");
+  eq("triage[clean MR]: parses the commit type", clean.facts.commitType, "fix");
+
+  // The observed failure, as a fixture.
+  const conflicted = triageMrPayload({
+    mr: { ...base, has_conflicts: true, merge_status: "cannot_be_merged", detailed_merge_status: "conflict" },
+    workspaceRemote: remote,
+    currentUser: "jane.doe",
+  });
+  eq("triage[conflicted MR]: does not proceed", conflicted.proceed, false);
+  truthy(
+    "triage[conflicted MR]: raises a conflicts blocker",
+    conflicted.blockers.some((b) => b.code === "conflicts"),
+  );
+  eq("triage[conflicted MR]: surfaces has_conflicts as a fact", conflicted.facts.hasConflicts, true);
+
+  // A payload omitting has_conflicts is not a payload without conflicts.
+  const partialSignal = triageMrPayload({
+    mr: { ...base, detailed_merge_status: "conflict" },
+    workspaceRemote: remote,
+    currentUser: "jane.doe",
+  });
+  truthy(
+    "triage[conflict via detailed_merge_status only]: still caught",
+    partialSignal.blockers.some((b) => b.code === "conflicts"),
+  );
+
+  for (const state of ["merged", "closed", "locked"]) {
+    const r = triageMrPayload({ mr: { ...base, state }, workspaceRemote: remote, currentUser: "jane.doe" });
+    truthy(
+      `triage[${state}]: blocks`,
+      r.blockers.some((b) => b.code === "terminal-state"),
+    );
+  }
+
+  const wrongProject = triageMrPayload({
+    mr: base,
+    workspaceRemote: "git@git.example.net:other/team/unrelated.git",
+    currentUser: "jane.doe",
+  });
+  truthy(
+    "triage[wrong project]: blocks before any checkout",
+    wrongProject.blockers.some((b) => b.code === "wrong-project"),
+  );
+
+  const zero = triageMrPayload({
+    mr: { ...base, user_notes_count: 0 },
+    workspaceRemote: remote,
+    currentUser: "jane.doe",
+  });
+  truthy(
+    "triage[zero comments]: blocks",
+    zero.blockers.some((b) => b.code === "zero-comments"),
+  );
+
+  const notYours = triageMrPayload({ mr: base, workspaceRemote: remote, currentUser: "someone.else" });
+  eq("triage[not yours]: still proceeds", notYours.proceed, true);
+  truthy(
+    "triage[not yours]: flags ownership",
+    notYours.flags.some((f) => f.code === "not-yours"),
+  );
+
+  const noKey = triageMrPayload({
+    mr: { ...base, title: "tidy up the modal service" },
+    workspaceRemote: remote,
+    currentUser: "jane.doe",
+  });
+  truthy(
+    "triage[no ticket key]: flags it",
+    noKey.flags.some((f) => f.code === "no-ticket-key"),
+  );
+  eq("triage[no ticket key]: does not invent one", noKey.facts.ticketKey, null);
+
+  // A check that could not run must never be reported as a check that passed.
+  const noInputs = triageMrPayload({ mr: base });
+  truthy(
+    "triage[missing inputs]: wrong-project reported undetermined, not passed",
+    noInputs.undetermined.some((u) => u.startsWith("wrong-project")),
+  );
+  truthy(
+    "triage[missing inputs]: ownership reported undetermined, not passed",
+    noInputs.undetermined.some((u) => u.startsWith("not-yours")),
+  );
+  eq(
+    "triage[missing inputs]: raises no false ownership flag",
+    noInputs.flags.filter((f) => f.code === "not-yours"),
+    [],
+  );
+
+  // SSH remote, HTTPS web URL, trailing .git and case must all compare equal.
+  eq(
+    "triage: ssh remote normalizes to the same path as the MR web_url",
+    normalizeProjectPath(remote),
+    normalizeProjectPath(base.web_url),
+  );
+  eq(
+    "triage: https remote normalizes too",
+    normalizeProjectPath("https://git.example.net/Retail/Bidaya/Frontend/Bidaya.git"),
+    "retail/bidaya/frontend/bidaya",
+  );
+  eq("triage: unusable remote yields null rather than a wrong guess", normalizeProjectPath(""), null);
+
+  eq("triage: parses a bare conventional title", parseMrTitle("feat(ABC-1): thing").commitType, "feat");
+  eq("triage: tolerates a breaking-change marker", parseMrTitle("feat(ABC-1)!: thing").commitType, "feat");
+
+  throws("triage: rejects a non-object payload", () => triageMrPayload({ mr: [] }));
+
+  // All three default their input as `input ?? {}` rather than `= {}` on the
+  // parameter (see hunks.js). What that must not alter: a no-argument call still
+  // reaches the documented error, not a TypeError from destructuring undefined.
+  throws("triage: a no-argument call reaches the documented error", () => triageMrPayload(), "mr must be");
+  throws(
+    "reconcile: a no-argument call reaches the documented error",
+    () => reconcileDiscussionCounts(),
+    "discussions must be an array",
+  );
+  throws(
+    "hunks: a no-argument call reaches the documented error",
+    () => attributeStagedHunks(),
+    "diffText must be a string",
+  );
+}
+
+// ---------- Discussion count reconciliation ----------
+
+function testDiscussionReconciliation() {
+  const note = (id, username, extra = {}) => ({ id, author: { username }, system: false, ...extra });
+
+  const discussions = [
+    { id: "d1", notes: [note(1, "reviewer"), note(2, "jane.doe")] },
+    { id: "d2", notes: [note(3, "reviewer", { resolvable: true, resolved: true })] },
+    { id: "d3", notes: [note(4, "reviewer", { resolvable: true, resolved: false })] },
+    { id: "d4", notes: [{ id: 5, system: true, author: { username: "jane.doe" } }] },
+  ];
+
+  const r = reconcileDiscussionCounts({ discussions, userNotesCount: 4, currentUser: "jane.doe" });
+  eq("reconcile: counts threads", r.threadsTotal, 4);
+  // d4 is system-only: a discussion, not a thread to triage. MR !508 counted 5
+  // against 3 and produced "3 reviewer comments across 5 threads (3 notes)".
+  eq("reconcile: excludes system-only threads from the triage count", r.feedbackThreads, 3);
+  eq("reconcile: counts all notes including system", r.notesTotal, 5);
+  eq("reconcile: counts system notes separately", r.systemNotes, 1);
+  eq("reconcile: excludes own replies from the reviewer count", r.reviewerNotes, 3);
+  eq("reconcile: counts own replies separately", r.ownNotes, 1);
+  eq("reconcile: compares non-system notes against user_notes_count", r.expectedNotes, 4);
+  eq("reconcile: reconciles", r.reconciles, true);
+  eq("reconcile: counts resolved threads", r.resolvedThreads, 1);
+  eq("reconcile: counts unresolved threads", r.unresolvedThreads, 1);
+  truthy("reconcile: builds the count line", r.countLine.includes("3 reviewer comments across 3 threads"));
+  falsy("reconcile: count line never reports the raw discussion total", r.countLine.includes("4 threads"));
+  truthy("reconcile: reason explains the excluded system-only threads", r.reason.includes("only system notes"));
+
+  // It used to end "Reading the referenced files now.", duplicating the brief's own
+  // "Next:" row — or contradicting it when a blocker stopped the run before any read.
+  truthy("reconcile: count line ends on the reconciliation verdict", r.countLine.endsWith("reconciles ✓)"));
+  falsy("reconcile: count line carries no next-action sentence", /Reading|now\./i.test(r.countLine));
+
+  // What an unexhausted paginated fetch looks like. It must not read as agreement.
+  const short = reconcileDiscussionCounts({ discussions, userNotesCount: 19, currentUser: "jane.doe" });
+  eq("reconcile[under-fetch]: does not reconcile", short.reconciles, false);
+  truthy("reconcile[under-fetch]: reason names pagination", short.reason.includes("paginated"));
+  truthy("reconcile[under-fetch]: count line says MISMATCH", short.countLine.includes("MISMATCH"));
+  falsy("reconcile[under-fetch]: mismatch line carries no next-action sentence", /Reading/i.test(short.countLine));
+
+  // No expectation supplied is unknown, never a pass.
+  const unknown = reconcileDiscussionCounts({ discussions, currentUser: "jane.doe" });
+  eq("reconcile[no user_notes_count]: reconciles is null, not true", unknown.reconciles, null);
+  truthy("reconcile[no user_notes_count]: says so in the count line", unknown.countLine.includes("not reconciled"));
+
+  const linked = reconcileDiscussionCounts({ discussions, userNotesCount: 4, noteIdFromUrl: "3" });
+  eq("reconcile: finds a linked note id from the URL", linked.linkedNoteFound, true);
+  eq(
+    "reconcile: reports a linked note id that isn't in the fetch",
+    reconcileDiscussionCounts({ discussions, userNotesCount: 4, noteIdFromUrl: "999" }).linkedNoteFound,
+    false,
+  );
+  eq(
+    "reconcile: linkedNoteFound is null when no note id was in the URL",
+    reconcileDiscussionCounts({ discussions, userNotesCount: 4 }).linkedNoteFound,
+    null,
+  );
+
+  eq(
+    "reconcile[empty]: zero threads",
+    reconcileDiscussionCounts({ discussions: [], userNotesCount: 0 }).threadsTotal,
+    0,
+  );
+  throws("reconcile: rejects a non-array", () => reconcileDiscussionCounts({ discussions: null }));
+}
+
+// ---------- Staged hunk attribution ----------
+
+function testStagedHunkAttribution() {
+  const diff = [
+    "diff --git a/src/a.ts b/src/a.ts",
+    "index 111..222 100644",
+    "--- a/src/a.ts",
+    "+++ b/src/a.ts",
+    "@@ -1,3 +1,4 @@ export class A {",
+    " keep",
+    "-old",
+    "+new",
+    "+extra",
+    "@@ -20,2 +21,2 @@ method() {",
+    "-gone",
+    "+back",
+    "diff --git a/src/untouched.ts b/src/untouched.ts",
+    "index 333..444 100644",
+    "--- a/src/untouched.ts",
+    "+++ b/src/untouched.ts",
+    "@@ -5,1 +5,2 @@",
+    "+someone elses line",
+    "diff --git a/assets/logo.png b/assets/logo.png",
+    "Binary files a/assets/logo.png and b/assets/logo.png differ",
+  ].join("\n");
+
+  const parsed = parseStagedDiff(diff);
+  eq("hunks: parses every file", parsed.length, 3);
+  eq("hunks: parses both hunks of the first file", parsed[0].hunks.length, 2);
+  eq("hunks: counts additions", parsed[0].hunks[0].added, 2);
+  eq("hunks: counts removals", parsed[0].hunks[0].removed, 1);
+  falsy("hunks: does not count the +++ header as an addition", parsed[0].hunks[0].added > 2);
+
+  const r = attributeStagedHunks({ diffText: diff, approvedFiles: ["src/a.ts"], formatterFiles: [] });
+  eq("hunks: totals added", r.totals.added, 4);
+  eq("hunks: totals removed", r.totals.removed, 2);
+  eq("hunks: builds the numstat string used in the summary", r.numstat, "+4 / -2");
+  eq("hunks: flags the file with no basis at all", r.unexplainedFiles, ["src/untouched.ts", "assets/logo.png"]);
+  eq("hunks: not all files explained", r.allFilesExplained, false);
+  eq("hunks: lists binary files", r.binaryFiles, ["assets/logo.png"]);
+
+  // The honest limit: a file with a basis still yields per-hunk items, because
+  // file-level basis can't prove line-level authorship.
+  eq("hunks: every hunk in an approved file still needs judgement", r.needsJudgement.length, 2);
+  truthy(
+    "hunks: reason states that file-level basis is not line-level proof",
+    r.reason.includes("does not prove line-level authorship"),
+  );
+
+  const formatted = attributeStagedHunks({
+    diffText: diff,
+    approvedFiles: ["src/a.ts"],
+    formatterFiles: ["src/untouched.ts", "assets/logo.png"],
+  });
+  eq("hunks: a formatter-reported file counts as a basis", formatted.unexplainedFiles, []);
+  eq("hunks: then all files are explained", formatted.allFilesExplained, true);
+  truthy(
+    "hunks: basis is recorded per file",
+    formatted.files.find((f) => f.path === "src/untouched.ts").basis.includes("formatter-reported"),
+  );
+
+  // A resolution is a third basis, not folded into approvedFiles: it can be a real
+  // design decision (observed: a service rewritten to delegate, plus a file deleted),
+  // and merged in it would pass attribution under a review comment's approval.
+  const resolvedOnly = attributeStagedHunks({
+    diffText: diff,
+    approvedFiles: [],
+    conflictFiles: ["src/a.ts"],
+  });
+  eq("hunks: a conflict resolution is its own basis", resolvedOnly.files[0].basis, ["conflict-resolution"]);
+  eq("hunks: resolution files are reported", resolvedOnly.resolutionFiles, ["src/a.ts"]);
+  eq("hunks: a resolution alone is not a mixed file", resolvedOnly.mixedFiles, []);
+  truthy(
+    "hunks: reason tells the caller to keep a resolution in its own commit",
+    resolvedOnly.reason.includes("keep it in its own commit"),
+  );
+
+  const mixed = attributeStagedHunks({
+    diffText: diff,
+    approvedFiles: ["src/a.ts"],
+    conflictFiles: ["src/a.ts"],
+  });
+  eq("hunks: a file carrying both bases records both", mixed.files[0].basis, [
+    "approved-change",
+    "conflict-resolution",
+  ]);
+  eq("hunks: a file carrying both is reported as mixed", mixed.mixedFiles, ["src/a.ts"]);
+
+  // Same laundering rule as formatterFiles: output derives from the diff, so naming
+  // an unstaged path doesn't make it a resolution that happened.
+  eq(
+    "hunks: a conflict_files path absent from the diff is not reported as a resolution",
+    attributeStagedHunks({ diffText: diff, approvedFiles: ["src/a.ts"], conflictFiles: ["src/never-staged.ts"] })
+      .resolutionFiles,
+    [],
+  );
+
+  eq("hunks[empty diff]: nothing staged", attributeStagedHunks({ diffText: "" }).totals.files, 0);
+  eq(
+    "hunks: windows-style paths normalize",
+    attributeStagedHunks({ diffText: diff, approvedFiles: [String.raw`src\a.ts`] }).files[0].basis,
+    ["approved-change"],
+  );
+  eq(
+    "hunks: windows-style conflict paths normalize too",
+    attributeStagedHunks({ diffText: diff, conflictFiles: [String.raw`src\a.ts`] }).files[0].basis,
+    ["conflict-resolution"],
+  );
+  throws("hunks: rejects a non-string diff", () => attributeStagedHunks({ diffText: null }));
+  throws("hunks: rejects non-array approvedFiles", () =>
+    attributeStagedHunks({ diffText: diff, approvedFiles: "src/a.ts" }),
+  );
+  throws("hunks: rejects non-array conflictFiles", () =>
+    attributeStagedHunks({ diffText: diff, conflictFiles: "src/a.ts" }),
+  );
+}
+
+// ---------- GraphQL normalization ----------
+
+/**
+ * The fixture is trimmed from a real `glab api graphql` response against GitLab 18.x,
+ * so the field names, enum casing and `gid://` prefixes are the actual ones.
+ *
+ * The trap it pins: ids come back as global IDs whose bare remainders ARE the REST
+ * ids. One left in place 404s every reply POST at the end of a run, after the
+ * approval gate has closed.
+ */
+function testGraphqlNormalization() {
+  const payload = {
+    data: {
+      project: {
+        mergeRequest: {
+          iid: "508",
+          title: "fix(BIDAYA-2096): add missing icons",
+          state: "opened",
+          sourceBranch: "fix/BIDAYA-2096",
+          targetBranch: "develop",
+          userNotesCount: 3,
+          conflicts: true,
+          mergeStatusEnum: "CANNOT_BE_MERGED",
+          detailedMergeStatus: "CONFLICT",
+          draft: false,
+          webUrl: "https://git.example.net/a/b/repo/-/merge_requests/508",
+          author: { username: "youssef" },
+          assignees: { nodes: [{ username: "youssef" }] },
+          discussions: {
+            pageInfo: { hasNextPage: false, endCursor: "eyJpZCI6IjEifQ" },
+            nodes: [
+              {
+                // System-only thread: activity log, not feedback.
+                id: "gid://gitlab/Discussion/aaa111",
+                notes: {
+                  nodes: [
+                    {
+                      id: "gid://gitlab/Note/87594",
+                      system: true,
+                      resolvable: false,
+                      resolved: false,
+                      body: "requested review from @hodei",
+                      author: { username: "youssef" },
+                      position: null,
+                    },
+                  ],
+                },
+              },
+              {
+                // Diff thread, unresolved, from a reviewer.
+                id: "gid://gitlab/Discussion/bbb222",
+                notes: {
+                  nodes: [
+                    {
+                      id: "gid://gitlab/Note/87600",
+                      system: false,
+                      resolvable: true,
+                      resolved: false,
+                      body: "use the directional radius mixin",
+                      createdAt: "2026-09-10T10:00:00Z",
+                      author: { username: "hodei" },
+                      position: { newPath: "src/_banner.scss", newLine: 17 },
+                    },
+                  ],
+                },
+              },
+              {
+                // General MR comment: no position, resolvable false.
+                id: "gid://gitlab/Discussion/ccc333",
+                notes: {
+                  nodes: [
+                    {
+                      id: "gid://gitlab/Note/87601",
+                      system: false,
+                      resolvable: false,
+                      resolved: false,
+                      body: "looks good overall",
+                      author: { username: "hodei" },
+                      position: null,
+                    },
+                    {
+                      id: "gid://gitlab/Note/87602",
+                      system: false,
+                      resolvable: false,
+                      resolved: false,
+                      body: "thanks, pushed a fix",
+                      author: { username: "youssef" },
+                      position: null,
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+
+  const { mr, discussions, hasNextPage, endCursor } = normalizeGraphqlMr(payload);
+
+  // camelCase → snake_case, so the existing REST-shaped tools need no changes.
+  eq("graphql: iid becomes a number", mr.iid, 508);
+  eq("graphql: sourceBranch → source_branch", mr.source_branch, "fix/BIDAYA-2096");
+  eq("graphql: userNotesCount → user_notes_count", mr.user_notes_count, 3);
+  eq("graphql: conflicts → has_conflicts", mr.has_conflicts, true);
+  // Skip the enum lowercasing and the conflict blocker never fires: it compares
+  // against "cannot_be_merged".
+  eq("graphql: mergeStatusEnum is lowercased to the REST spelling", mr.merge_status, "cannot_be_merged");
+  eq("graphql: detailedMergeStatus is lowercased too", mr.detailed_merge_status, "conflict");
+  eq("graphql: assignees connection is unwrapped", mr.assignees, [{ username: "youssef" }]);
+
+  // The gid trap.
+  eq("graphql: discussion gid is stripped to the REST id", discussions[0].id, "aaa111");
+  eq("graphql: note gid is stripped to the REST id", discussions[1].notes[0].id, "87600");
+  truthy(
+    "graphql: no gid:// survives anywhere in the normalized output",
+    !JSON.stringify(discussions).includes("gid://"),
+  );
+  eq("graphql[stripGid]: leaves a bare REST id untouched", stripGid("87600"), "87600");
+  eq("graphql[stripGid]: tolerates a non-string", stripGid(undefined), null);
+
+  // `old_path`/`old_line` carry a comment on a deleted line, which has null new_* and
+  // used to render as `null:null`. `line_range` stays null because GitLab's DiffPosition
+  // has no such field, so the query cannot ask for one.
+  eq("graphql: position is renamed to the REST shape", discussions[1].notes[0].position, {
+    new_path: "src/_banner.scss",
+    new_line: 17,
+    old_path: null,
+    old_line: null,
+    line_range: null,
+  });
+  eq("graphql: a general comment keeps a null position, as REST does", discussions[2].notes[0].position, null);
+
+  // GraphQL's version of the REST paging shortfall: surfaced, not swallowed, because
+  // it means the same as `reconciles: false`.
+  eq("graphql: hasNextPage is reported", hasNextPage, false);
+  eq("graphql: endCursor is reported for continuation", endCursor, "eyJpZCI6IjEifQ");
+
+  // End to end: the normalized output must drive the decision tools to the same
+  // answers the REST shape would have.
+  const triage = triageMrPayload({ mr, workspaceRemote: "git@git.example.net:a/b/repo.git", currentUser: "youssef" });
+  truthy(
+    "graphql: the conflict blocker fires from the normalized payload",
+    triage.blockers.some((b) => b.code === "conflicts"),
+  );
+  eq("graphql: the ticket key is parsed from the title", triage.facts.ticketKey, "BIDAYA-2096");
+
+  const counts = reconcileDiscussionCounts({
+    discussions,
+    userNotesCount: mr.user_notes_count,
+    currentUser: "youssef",
+  });
+  eq("graphql: threadsTotal counts every discussion", counts.threadsTotal, 3);
+  eq("graphql: feedbackThreads excludes the system-only thread", counts.feedbackThreads, 2);
+  eq("graphql: own replies are excluded from the reviewer count", counts.reviewerNotes, 2);
+  eq("graphql: the note count reconciles against userNotesCount", counts.reconciles, true);
+
+  // Envelope tolerance: the same payload should normalize whether it arrives
+  // wrapped by the transport or as a bare mergeRequest.
+  eq(
+    "graphql: a bare mergeRequest object normalizes identically",
+    normalizeGraphqlMr(payload.data.project.mergeRequest).mr.iid,
+    508,
+  );
+  throws("graphql: rejects a non-payload", () => normalizeGraphqlMr(null));
+  throws("graphql: rejects an array", () => normalizeGraphqlMr([1, 2, 3]));
+
+  // The query and the normalizer live in the same module so they can't drift.
+  for (const field of [
+    "mergeStatusEnum",
+    "detailedMergeStatus",
+    "userNotesCount",
+    "sourceBranch",
+    "pageInfo",
+    "position",
+  ]) {
+    truthy(`graphql: MR_QUERY selects ${field}`, MR_QUERY.includes(field));
+  }
+  truthy(
+    "graphql: MR_QUERY declares iid as String!, which is why --raw-field is required",
+    MR_QUERY.includes("$iid: String!"),
+  );
+}
+
+// ---------- Server transport ----------
+
+/**
+ * The direct-import tests prove the logic; this proves the wiring, and that bad
+ * input returns an explicit error rather than a fabricated result.
+ */
+function testServerTransport() {
+  const SERVER = resolve(ROOT, "server", "server.js");
+
+  const call = (messages) => {
+    const input = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
+    const out = execFileSync(process.execPath, [SERVER], { input, encoding: "utf8" });
+    return out
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+  };
+
+  const init = {
+    jsonrpc: "2.0",
+    id: 0,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1.0.0" } },
+  };
+
+  const handshake = call([init]).find((m) => m.id === 0);
+  eq("transport: negotiates the requested protocol version", handshake.result.protocolVersion, "2025-06-18");
+  eq("transport: reports its name", handshake.result.serverInfo.name, "mr-review-checks");
+  const pkg = JSON.parse(readFileSync(join(ROOT, "server", "package.json"), "utf8"));
+  eq("transport: serverInfo.version matches package.json", handshake.result.serverInfo.version, pkg.version);
+
+  const tools = call([init, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }]).find((m) => m.id === 1).result
+    .tools;
+  eq("transport: advertises five tools", tools.length, 5);
+  const names = tools.map((t) => t.name).sort(byCodeUnit);
+  eq("transport: tool names", names, [
+    "attribute_staged_hunks",
+    "locate_bundled_scripts",
+    "reconcile_discussion_counts",
+    "triage_graphql_mr",
+    "triage_mr_payload",
+  ]);
+  // Docs versus reality. POWER.md, the README and a reference file all claimed three
+  // tools while four shipped, and the README told the reader to expect three two
+  // paragraphs after naming the fourth — so a correct install reads as broken. The
+  // keyword-parity suite already proves this pattern was understood; this applies it to
+  // the one other pair of hand-maintained facts.
+  const count = tools.length;
+  const word = ["zero", "one", "two", "three", "four", "five", "six"][count] ?? String(count);
+  const power = readFileSync(join(ROOT, "POWER.md"), "utf8");
+  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  const investigating = readFileSync(join(ROOT, "skills", "mr-comments", "references", "investigating.md"), "utf8");
+
+  for (const [label, text] of [
+    ["POWER.md", power],
+    ["README.md", readme],
+    ["investigating.md", investigating],
+  ]) {
+    const wrong = ["zero", "one", "two", "three", "four", "five", "six"]
+      .filter((w) => w !== word)
+      .filter((w) => new RegExp(String.raw`\b${w} tools\b`, "i").test(text));
+    eq(`parity[${label}]: names no tool count other than ${word}`, wrong, []);
+    const wrongDigits = [1, 2, 3, 4, 5, 6]
+      .filter((n) => n !== count)
+      .filter((n) => new RegExp(String.raw`\b${n} tools\b`).test(text));
+    eq(`parity[${label}]: no digit tool count other than ${count}`, wrongDigits, []);
+  }
+  // Every shipped tool must appear in POWER.md's table, or the table is a partial list
+  // presented as a complete one.
+  for (const t of tools) {
+    truthy(`parity[POWER.md]: documents \`${t.name}\``, power.includes(`\`${t.name}\``));
+  }
+
+  const noRequiredExpected = new Set([
+    // Takes EITHER `discussions_text` or `discussions`, which JSON Schema can't express.
+    // The handler enforces it and returns an explicit tool error either way.
+    "reconcile_discussion_counts",
+    // Takes no arguments at all, so there is nothing to require.
+    "locate_bundled_scripts",
+  ]);
+  for (const t of tools) {
+    if (!noRequiredExpected.has(t.name)) {
+      truthy(`transport[${t.name}]: declares required inputs`, Array.isArray(t.inputSchema.required));
+    }
+    const props = Object.keys(t.inputSchema.properties ?? {});
+    eq(
+      `transport[${t.name}]: params are snake_case`,
+      props.filter((p) => /[A-Z]/.test(p)),
+      [],
+    );
+  }
+
+  const triaged = call([
+    init,
+    {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "triage_mr_payload",
+        arguments: { mr: { iid: 1, state: "opened", user_notes_count: 3, has_conflicts: true, title: "fix(A-1): x" } },
+      },
+    },
+  ]).find((m) => m.id === 2).result;
+  falsy("transport[triage]: a valid call is not an error", triaged.isError);
+  truthy(
+    "transport[triage]: conflict blocker survives the JSON-RPC boundary",
+    JSON.parse(triaged.content[0].text).blockers.some((b) => b.code === "conflicts"),
+  );
+
+  // The path lookup exists because a measured run spent 60s and nine directory listings
+  // guessing where its own scripts were. It has to come back with something runnable, so
+  // the assertion is that the file is actually there and the quoted `run` string works.
+  const located = call([
+    init,
+    { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "locate_bundled_scripts", arguments: {} } },
+  ]).find((m) => m.id === 9).result;
+  falsy("transport[locate]: takes no arguments and is not an error", located.isError);
+  const paths = JSON.parse(located.content[0].text);
+  for (const s of ["fetch-mr.mjs", "git-context.mjs"]) {
+    truthy(`transport[locate]: returns a path for ${s}`, typeof paths.scripts?.[s]?.path === "string");
+    truthy(`transport[locate]: the path for ${s} resolves to a real file`, existsSync(paths.scripts[s].path));
+    // Quoted, because the default install path contains the user's name and that
+    // usually contains a space.
+    eq(`transport[locate]: the run string for ${s} is quoted`, paths.scripts[s].run, `node "${paths.scripts[s].path}"`);
+  }
+  truthy("transport[locate]: powerRoot points at this power", existsSync(join(paths.powerRoot, "plugin.json")));
+  falsy("transport[locate]: no Windows drive-letter path leaks a leading slash", /^\/[a-zA-Z]:/.test(paths.powerRoot));
+
+  // The description has to carry the resolved commands, not just describe them. A tool
+  // description ships with the tool list, which the run holds before it reads the skill,
+  // so this is the one channel that delivers the path without being asked. Three runs
+  // spent between two and nine calls verifying a path documented as a convention;
+  // a path the server computed from its own location is evidence instead of a claim.
+  const locateTool = tools.find((t) => t.name === "locate_bundled_scripts");
+  for (const s of ["fetch-mr.mjs", "git-context.mjs"]) {
+    truthy(
+      `transport[locate]: the description states the resolved command for ${s}`,
+      locateTool.description.includes(paths.scripts[s].run),
+    );
+  }
+  truthy(
+    "transport[locate]: and tells the run not to verify it first",
+    /Do not verify them with `file_search` or `list_directory`/.test(locateTool.description),
+  );
+
+  // The whole path for the newest input: schema → snake_case unwrap → camelCase set
+  // in hunks.js → output field.
+  const attributed = call([
+    init,
+    {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: {
+        name: "attribute_staged_hunks",
+        arguments: {
+          diff_text: ["diff --git a/src/svc.ts b/src/svc.ts", "@@ -1,2 +1,2 @@", "-old", "+resolved"].join("\n"),
+          approved_files: [],
+          conflict_files: ["src/svc.ts"],
+        },
+      },
+    },
+  ]).find((m) => m.id === 5).result;
+  falsy("transport[hunks]: a valid call is not an error", attributed.isError);
+  eq(
+    "transport[hunks]: conflict_files reaches the resolution basis across the boundary",
+    JSON.parse(attributed.content[0].text).resolutionFiles,
+    ["src/svc.ts"],
+  );
+
+  // `discussions_text` passes the response through instead of rebuilding it, so a
+  // field can't be lost on the way in. Prove it reaches the same counts.
+  const ndjson = [
+    JSON.stringify({
+      id: "d1",
+      notes: [{ id: 1, system: true, resolvable: false, resolved: false, author: { username: "bot" } }],
+    }),
+    JSON.stringify({
+      id: "d2",
+      notes: [{ id: 2, system: false, resolvable: true, resolved: false, author: { username: "hodei" } }],
+    }),
+  ].join("\n");
+  const viaText = call([
+    init,
+    {
+      jsonrpc: "2.0",
+      id: 6,
+      method: "tools/call",
+      params: {
+        name: "reconcile_discussion_counts",
+        arguments: { discussions_text: ndjson, user_notes_count: 1, current_user: "youssef" },
+      },
+    },
+  ]).find((m) => m.id === 6).result;
+  falsy("transport[reconcile]: the ndjson text path is not an error", viaText.isError);
+  const textCounts = JSON.parse(viaText.content[0].text);
+  eq("transport[reconcile]: ndjson text yields the same feedbackThreads", textCounts.feedbackThreads, 1);
+  eq("transport[reconcile]: ndjson text reconciles", textCounts.reconciles, true);
+
+  // Truncation is the common real failure, and it must name the line so the caller
+  // continues from an offset instead of reconciling on half.
+  const truncated = call([
+    init,
+    {
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: "reconcile_discussion_counts", arguments: { discussions_text: '{"id":"d1","notes":[{"id":1' } },
+    },
+  ]).find((m) => m.id === 7).result;
+  truthy("transport[reconcile]: a truncated ndjson line is an explicit error", truncated.isError);
+  truthy(
+    "transport[reconcile]: the truncation error names the line and the remedy",
+    truncated.content[0].text.includes("line 1") && truncated.content[0].text.includes("offset"),
+  );
+
+  // One call replacing two, across the JSON-RPC boundary, gid stripping intact.
+  const gqlCall = call([
+    init,
+    {
+      jsonrpc: "2.0",
+      id: 8,
+      method: "tools/call",
+      params: {
+        name: "triage_graphql_mr",
+        arguments: {
+          graphql: {
+            data: {
+              project: {
+                mergeRequest: {
+                  iid: "77",
+                  title: "fix(A-1): x",
+                  state: "opened",
+                  userNotesCount: 1,
+                  conflicts: true,
+                  mergeStatusEnum: "CANNOT_BE_MERGED",
+                  discussions: {
+                    pageInfo: { hasNextPage: true },
+                    nodes: [
+                      {
+                        id: "gid://gitlab/Discussion/zz9",
+                        notes: {
+                          nodes: [
+                            {
+                              id: "gid://gitlab/Note/4242",
+                              system: false,
+                              resolvable: true,
+                              resolved: false,
+                              author: { username: "hodei" },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+          current_user: "youssef",
+        },
+      },
+    },
+  ]).find((m) => m.id === 8).result;
+  falsy("transport[graphql]: a valid call is not an error", gqlCall.isError);
+  const combined = JSON.parse(gqlCall.content[0].text);
+  truthy(
+    "transport[graphql]: returns the triage half, with the conflict blocker",
+    combined.triage.blockers.some((b) => b.code === "conflicts"),
+  );
+  eq("transport[graphql]: returns the counts half", combined.counts.feedbackThreads, 1);
+  truthy("transport[graphql]: counts carry the ready-made countLine", typeof combined.counts.countLine === "string");
+  eq("transport[graphql]: hands back REST-usable discussion ids", combined.discussions[0].id, "zz9");
+  eq("transport[graphql]: hands back REST-usable note ids", combined.discussions[0].notes[0].id, "4242");
+  eq("transport[graphql]: surfaces hasNextPage rather than swallowing it", combined.hasNextPage, true);
+
+  const bad = call([
+    init,
+    { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "attribute_staged_hunks", arguments: {} } },
+  ]).find((m) => m.id === 3).result;
+  truthy("transport: malformed input returns an explicit tool error", bad.isError);
+
+  const unknown = call([
+    init,
+    { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "nope", arguments: {} } },
+  ]).find((m) => m.id === 4);
+  truthy("transport: an unknown tool is a JSON-RPC error", unknown.error !== undefined);
+
+  // Zero dependencies means no `@types/node`, so every bare `process.` reads as an
+  // unknown name under checkJs. One locally-typed handle fixes that; an ambient
+  // `declare var process` was rejected because it collides with `@types/node`
+  // wherever a parent directory supplies it. Assert the handle, and no bare use back.
+  const serverSource = readFileSync(SERVER, "utf8");
+  truthy(
+    "transport: process is reached through one locally-typed handle",
+    /const proc = \/\*\* @type \{any\} \*\/ \(globalThis\)\.process;/.test(serverSource),
+  );
+  falsy(
+    "transport: no bare `process.` use outside that handle",
+    /(^|[^.\w])process\.(stdin|stdout|stderr|exit|argv|env)/m.test(serverSource),
+  );
+}
+
+// ---------- Audit regressions ----------
+
+/**
+ * Every case here is a bug that shipped while the whole suite was green, found by an
+ * audit that executed the modules instead of reading them. The happy-path fixtures
+ * above pass on all of them, which is why these are separate: each one is a shape the
+ * original tests never fed in.
+ */
+function testAuditRegressions() {
+  // --- hunks: `---`/`+++` are file headers only before the first `@@`. Filtering them
+  // inside a hunk silently drops content lines, and markdown and YAML front matter hit
+  // it constantly. `numstat` is documented as authoritative, so it was wrong at the
+  // one gate the user approves.
+  const md = attributeStagedHunks({
+    diffText: [
+      "diff --git a/doc.md b/doc.md",
+      "index 1..2 100644",
+      "--- a/doc.md",
+      "+++ b/doc.md",
+      "@@ -1,4 +1,4 @@",
+      " keep",
+      "----",
+      "--- old front matter",
+      "+++ new content",
+      "+kept",
+    ].join("\n"),
+    approvedFiles: ["doc.md"],
+  });
+  eq("audit[hunks]: a removed line whose content starts with --- is counted", md.numstat, "+2 / -2");
+  eq("audit[hunks]: the real file headers are still not counted", md.totals.hunks, 1);
+
+  // --- hunks: git quotes any path with a non-ASCII byte, a tab or a quote. The old
+  // regex required a bare `a/`, so the header didn't match, no new file was started,
+  // and the following `@@` opened a hunk on the PREVIOUS file — laundering a
+  // colleague's staged lines into an approved change with allFilesExplained true.
+  const quoted = attributeStagedHunks({
+    diffText: [
+      "diff --git a/mine.ts b/mine.ts",
+      "@@ -1,1 +1,2 @@",
+      "+approved",
+      String.raw`diff --git "a/caf\303\251.ts" "b/caf\303\251.ts"`,
+      "@@ -1,1 +1,4 @@",
+      "+foreign1",
+      "+foreign2",
+      "+foreign3",
+    ].join("\n"),
+    approvedFiles: ["mine.ts"],
+  });
+  eq("audit[hunks]: a quoted path is its own file, not a hunk on the previous one", quoted.files.length, 2);
+  eq("audit[hunks]: the quoted path is decoded from its octal escapes", quoted.files[1]?.path, "café.ts");
+  eq("audit[hunks]: the foreign file has no basis and is reported", quoted.unexplainedFiles, ["café.ts"]);
+  falsy("audit[hunks]: so the diff is not declared fully explained", quoted.allFilesExplained);
+  eq("audit[hunks]: the approved file keeps only its own hunk", quoted.files[0]?.hunks.length, 1);
+
+  // A `diff --git` line always starts a new file even when neither form parses,
+  // because attributing its hunks to the previous file is the unsafe direction.
+  const unparsed = attributeStagedHunks({
+    diffText: [
+      "diff --git a/mine.ts b/mine.ts",
+      "@@ -1,1 +1,2 @@",
+      "+approved",
+      "diff --git something unparseable",
+      "@@ -1,1 +1,3 @@",
+      "+x",
+      "+y",
+    ].join("\n"),
+    approvedFiles: ["mine.ts"],
+  });
+  eq("audit[hunks]: an unparseable header still starts a new file", unparsed.files.length, 2);
+  falsy("audit[hunks]: and it fails safe as unexplained", unparsed.allFilesExplained);
+
+  // --- hunks: an unmerged path emits a combined `@@@` header. The old pattern didn't
+  // match, so the file parsed to zero hunks and still counted as basis-explained,
+  // meaning needsJudgement never asked for the per-hunk verdict.
+  const combined = attributeStagedHunks({
+    diffText: [
+      "diff --git a/svc.ts b/svc.ts",
+      "@@@ -1,5 -1,5 +1,7 @@@ ctx",
+      "++resolved",
+      "+ ours",
+      " keep",
+      "--gone",
+    ].join("\n"),
+    conflictFiles: ["svc.ts"],
+  });
+  eq("audit[hunks]: a combined @@@ header produces a hunk", combined.totals.hunks, 1);
+  truthy("audit[hunks]: and the hunk still needs a verdict", combined.needsJudgement.length > 0);
+  eq("audit[hunks]: a combined diff is surfaced rather than counted silently", combined.combinedFiles, ["svc.ts"]);
+  truthy("audit[hunks]: the reason names the combined diff", combined.reason.includes("combined"));
+
+  // --- graphql: the lookup chain ended in `?? payload`, so an envelope carrying no
+  // mergeRequest fell through to itself, passed the object guard, and produced
+  // all-null fields — which silenced every blocker and returned proceed: true.
+  throws(
+    "audit[graphql]: a payload whose project is null is rejected",
+    () => normalizeGraphqlMr({ data: { project: null } }),
+    "no merge request",
+  );
+  throws(
+    "audit[graphql]: a null mergeRequest is rejected",
+    () => normalizeGraphqlMr({ data: { project: { mergeRequest: null } } }),
+    "no merge request",
+  );
+  throws(
+    "audit[graphql]: an errors array is rejected rather than triaged",
+    () => normalizeGraphqlMr({ errors: [{ message: "boom" }], data: { project: { mergeRequest: null } } }),
+    "GraphQL returned errors",
+  );
+  // The bare-mergeRequest form still has to work; it's how fixtures read.
+  eq("audit[graphql]: a bare mergeRequest is still accepted", normalizeGraphqlMr({ iid: "5" }).mr.iid, 5);
+
+  // --- graphql: DiffPosition has no lineRange field (verified by introspection), so
+  // the normalizer was reading something the query could never supply. oldPath and
+  // oldLine do exist, and a comment on a deleted line needs them.
+  falsy("audit[graphql]: MR_QUERY does not ask for a field the schema lacks", MR_QUERY.includes("lineRange"));
+  truthy("audit[graphql]: MR_QUERY selects oldPath", MR_QUERY.includes("oldPath"));
+  truthy("audit[graphql]: MR_QUERY selects oldLine", MR_QUERY.includes("oldLine"));
+  truthy("audit[graphql]: the inner notes connection is paginated", /notes\(first:\s*\d+\)/.test(MR_QUERY));
+  truthy(
+    "audit[graphql]: and its pageInfo is selected so truncation is detectable",
+    /notes\(first:[^)]*\)\s*\{\s*pageInfo/.test(MR_QUERY),
+  );
+
+  const deleted = normalizeGraphqlMr({
+    iid: "9",
+    discussions: {
+      nodes: [
+        {
+          id: "gid://gitlab/Discussion/d",
+          notes: {
+            nodes: [
+              {
+                id: "gid://gitlab/Note/1",
+                position: { newPath: null, newLine: null, oldPath: "gone.ts", oldLine: 12 },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  });
+  eq(
+    "audit[graphql]: a comment on a deleted line keeps the old path",
+    deleted.discussions[0]?.notes[0]?.position?.old_path,
+    "gone.ts",
+  );
+  eq("audit[graphql]: and the old line", deleted.discussions[0]?.notes[0]?.position?.old_line, 12);
+
+  // Inner-notes truncation has to surface the same way the outer page does.
+  const innerTruncated = normalizeGraphqlMr({
+    iid: "9",
+    discussions: {
+      nodes: [
+        {
+          id: "gid://gitlab/Discussion/d",
+          notes: { pageInfo: { hasNextPage: true }, nodes: [{ id: "gid://gitlab/Note/1" }] },
+        },
+      ],
+    },
+  });
+  truthy("audit[graphql]: a truncated notes connection sets hasNextPage", innerTruncated.hasNextPage);
+
+  // --- mr-payload: the path comparison threw the host away, so the same path on two
+  // different GitLab instances compared equal and the highest-priority blocker
+  // couldn't fire. This is the threat fetch-mr.mjs rejects unknown flags to prevent.
+  const crossInstance = triageMrPayload({
+    mr: {
+      iid: 1,
+      state: "opened",
+      user_notes_count: 3,
+      title: "fix(A-1): x",
+      web_url: "https://gitlab.com/acme/app/-/merge_requests/1",
+    },
+    workspaceRemote: "git@git.internal.corp:acme/app.git",
+    currentUser: "me",
+  });
+  truthy(
+    "audit[triage]: the same path on a different host raises wrong-project",
+    crossInstance.blockers.some((b) => b.code === "wrong-project"),
+  );
+  falsy("audit[triage]: so it does not proceed", crossInstance.proceed);
+  // Same host reached two ways must still compare equal, or every run blocks.
+  const sameHost = triageMrPayload({
+    mr: {
+      iid: 1,
+      state: "opened",
+      user_notes_count: 3,
+      title: "fix(A-1): x",
+      web_url: "https://git.example.net/Retail/App/-/merge_requests/1",
+    },
+    workspaceRemote: "git@git.example.net:retail/app.git",
+    currentUser: "me",
+  });
+  eq("audit[triage]: ssh and https on one host still agree", sameHost.blockers, []);
+
+  // --- mr-payload: the key pattern cannot tell a Jira key from a standards name, so
+  // it invented tickets out of encodings and browser versions and suppressed the
+  // no-ticket-key flag while doing it.
+  for (const title of [
+    "fix: handle UTF-8 filenames",
+    "chore: bump to SHA-256",
+    "fix: drop IE-11",
+    "perf: switch to HTTP-2",
+  ]) {
+    eq(`audit[triage]: ${JSON.stringify(title)} yields no ticket key`, parseMrTitle(title).ticketKey, null);
+  }
+  eq("audit[triage]: a real key is still parsed", parseMrTitle("fix(BIDAYA-2084): x").ticketKey, "BIDAYA-2084");
+  eq(
+    "audit[triage]: a two-letter project key still parses when the branch agrees",
+    parseMrTitle("fix(AB-12): x").ticketKey,
+    "AB-12",
+  );
+
+  // A key found only in the title is weaker evidence than one the branch repeats.
+  const corroborated = triageMrPayload({
+    mr: {
+      iid: 1,
+      state: "opened",
+      user_notes_count: 3,
+      title: "fix: handle UTF-8 and BIDAYA-1 together",
+      source_branch: "fix/BIDAYA-1",
+    },
+  });
+  eq(
+    "audit[triage]: a branch-corroborated key wins over an earlier candidate",
+    corroborated.facts.ticketKey,
+    "BIDAYA-1",
+  );
+  truthy("audit[triage]: candidates are all reported", (corroborated.facts.ticketKeys ?? []).includes("BIDAYA-1"));
+  const uncorroborated = triageMrPayload({
+    mr: { iid: 1, state: "opened", user_notes_count: 3, title: "fix(AB-12): x", source_branch: "fix/something-else" },
+  });
+  truthy(
+    "audit[triage]: an uncorroborated key is reported as undetermined, not trusted",
+    uncorroborated.undetermined.some((u) => u.startsWith("ticket-key")),
+  );
+
+  // --- discussions: the system-note early return sat above the linked-note check, so
+  // a #note_ copied from the activity feed reported a broken fetch on a correct one.
+  const linkedSystem = reconcileDiscussionCounts({
+    discussions: [{ id: "d1", notes: [{ id: 900, system: true, author: { username: "bot" } }] }],
+    userNotesCount: 0,
+    noteIdFromUrl: "900",
+  });
+  eq("audit[reconcile]: a system note satisfies linkedNoteFound", linkedSystem.linkedNoteFound, true);
+  eq("audit[reconcile]: and it is still excluded from the feedback counts", linkedSystem.feedbackThreads, 0);
+
+  // --- discussions: reconciles is an equality test, so false covered excess too, and
+  // both directions got the shortfall text prescribing a re-paginate that cannot help.
+  const excess = reconcileDiscussionCounts({
+    discussions: [{ id: "d1", notes: [{ id: 1, system: false, author: { username: "r" } }] }],
+    userNotesCount: 0,
+  });
+  eq("audit[reconcile]: excess still fails to reconcile", excess.reconciles, false);
+  falsy("audit[reconcile]: excess is not diagnosed as a shortfall", excess.reason.includes("shortfall"));
+  truthy("audit[reconcile]: excess is named as more notes than expected", excess.reason.includes("more"));
+  const shortfall = reconcileDiscussionCounts({
+    discussions: [{ id: "d1", notes: [{ id: 1, system: false, author: { username: "r" } }] }],
+    userNotesCount: 9,
+  });
+  truthy("audit[reconcile]: a real shortfall still names pagination", shortfall.reason.includes("paginated"));
+
+  // --- discussions: omitting current_user counted every one of your own replies as
+  // reviewer feedback with no signal at all, so the count line overstated the feedback
+  // on exactly the MRs where you had already replied once per thread.
+  const noUser = reconcileDiscussionCounts({
+    discussions: [
+      {
+        id: "d1",
+        notes: [
+          { id: 1, system: false, author: { username: "me" } },
+          { id: 2, system: false, author: { username: "me" } },
+        ],
+      },
+    ],
+    userNotesCount: 2,
+  });
+  truthy(
+    "audit[reconcile]: a missing current_user is reported as undetermined",
+    (noUser.undetermined ?? []).some((u) => u.startsWith("own-notes")),
+  );
+  // --- slimThreadsForReport states the resolution rule a second time in discussions.js,
+  // which invariant 4 allows only with a test proving the two agree. This is that test:
+  // the trimmer's per-thread verdicts must sum to the counter's totals, on a fixture that
+  // mixes a system-only thread, a resolved diff thread, an unresolved one, and a general
+  // comment that GitLab cannot mark resolvable at all.
+  const mixed = [
+    { id: "sysonly", notes: [{ id: 1, system: true, author: { username: "bot" } }] },
+    {
+      id: "done",
+      notes: [
+        {
+          id: 2,
+          system: false,
+          resolvable: true,
+          resolved: true,
+          body: "x".repeat(500),
+          author: { username: "r" },
+          position: { new_path: "a.ts", new_line: 1 },
+        },
+      ],
+    },
+    {
+      id: "open",
+      notes: [
+        {
+          id: 3,
+          system: false,
+          resolvable: true,
+          resolved: false,
+          body: "y".repeat(500),
+          author: { username: "r" },
+          position: { new_path: "b.ts", new_line: 2 },
+        },
+      ],
+    },
+    {
+      id: "general",
+      notes: [{ id: 4, system: false, resolvable: false, resolved: false, body: "z", author: { username: "r" } }],
+    },
+  ];
+  const mixedCounts = reconcileDiscussionCounts({ discussions: mixed, userNotesCount: 3 });
+  const slim = slimThreadsForReport(mixed);
+  eq(
+    "audit[slim]: resolution agrees with the counter",
+    [slim.threads.filter((t) => t.resolved).length, slim.threads.filter((t) => t.resolvable && !t.resolved).length],
+    [mixedCounts.resolvedThreads, mixedCounts.unresolvedThreads],
+  );
+  eq("audit[slim]: emits one thread per feedback thread", slim.threads.length, mixedCounts.feedbackThreads);
+  eq("audit[slim]: drops system-only threads and says how many", slim.omitted.systemOnlyThreads, 1);
+  eq("audit[slim]: counts the system notes it dropped", slim.omitted.systemNotes, 1);
+  // The saving that removes the truncation, and the information that must survive it.
+  const resolved = slim.threads.find((t) => t.id === "done");
+  const open = slim.threads.find((t) => t.id === "open");
+  truthy(
+    "audit[slim]: a resolved body is excerpted",
+    resolved.notes[0].body.length < 200 && resolved.notes[0].bodyExcerpted === true,
+  );
+  eq("audit[slim]: an unresolved body is kept whole", open.notes[0].body.length, 500);
+  falsy("audit[slim]: and is not marked excerpted", open.notes[0].bodyExcerpted);
+  eq("audit[slim]: position is hoisted to the thread", open.position, { new_path: "b.ts", new_line: 2 });
+  // A general MR comment is neither resolvable nor resolved, and must still be reported.
+  eq(
+    "audit[slim]: a general comment survives as unresolvable",
+    slim.threads.find((t) => t.id === "general").resolvable,
+    false,
+  );
+  throws("audit[slim]: rejects a non-array", () => slimThreadsForReport(null), "must be an array");
+
+  const withUser = reconcileDiscussionCounts({
+    discussions: [{ id: "d1", notes: [{ id: 1, system: false, author: { username: "me" } }] }],
+    userNotesCount: 1,
+    currentUser: "me",
+  });
+  eq("audit[reconcile]: supplying it clears the undetermined entry", withUser.undetermined, []);
+  eq("audit[reconcile]: and attributes the note correctly", withUser.ownNotes, 1);
+}
+
+// ---------- git-context.mjs behaviour ----------
+
+/**
+ * The script existed with no behavioural coverage at all: the suite only grepped it
+ * for two substrings. Its JSON shape is the entire reason it replaced a shell chain,
+ * so `dirty` regressing from boolean to string would have gone unnoticed.
+ */
+function testGitContextScript() {
+  const script = join(ROOT, "skills", "mr-comments", "scripts", "git-context.mjs");
+
+  const run = (args) => {
+    try {
+      return {
+        status: 0,
+        stdout: execFileSync(process.execPath, [script, ...args], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }),
+        stderr: "",
+      };
+    } catch (err) {
+      return { status: err.status, stdout: String(err.stdout ?? ""), stderr: String(err.stderr ?? "") };
+    }
+  };
+
+  // This repo is a git repo, so the happy path is exercisable without a fixture.
+  const ok = run(["--cwd", ROOT, "--log-count", "3"]);
+  eq("git-context: exits 0 inside a repo", ok.status, 0);
+  let parsed;
+  try {
+    parsed = JSON.parse(ok.stdout);
+  } catch {
+    parsed = null;
+  }
+  truthy("git-context: stdout is a single JSON object", parsed !== null && typeof parsed === "object");
+  if (!parsed) return;
+
+  // The whole point of the rewrite: `dirty` is a boolean, so "clean tree" cannot be
+  // confused with a mangled shell separator.
+  eq("git-context: dirty is a boolean, never a string", typeof parsed.dirty, "boolean");
+  truthy("git-context: dirtyFiles is an array", Array.isArray(parsed.dirtyFiles));
+  eq("git-context: dirty agrees with dirtyFiles", parsed.dirty, parsed.dirtyFiles.length > 0);
+  truthy("git-context: log is an array", Array.isArray(parsed.log));
+  truthy("git-context: honours --log-count", parsed.log.length <= 3);
+  truthy(
+    "git-context: reports the origin remote as a string or null",
+    parsed.remote === null || typeof parsed.remote === "string",
+  );
+  truthy(
+    "git-context: reports the branch as a string or null",
+    parsed.branch === null || typeof parsed.branch === "string",
+  );
+
+  // Outside a repo it must fail loudly rather than return a plausible empty object.
+  const outside = run(["--cwd", tmpdir()]);
+  eq("git-context: exits non-zero outside a repo", outside.status, 1);
+  truthy("git-context: and says why on stderr", outside.stderr.includes("not a git repository"));
+}
+
 // ---------- Runner ----------
 
 const suites = [
+  ["audit regressions", testAuditRegressions],
+  ["local triage parity", testLocalTriageParity],
+  ["executable resolution", testExecutableResolution],
+  ["git-context script behaviour", testGitContextScript],
   ["workflow policy contracts", testWorkflowPolicyContracts],
+  ["progressive disclosure", testProgressiveDisclosure],
   ["self-review template shape", testSelfReviewTemplateShape],
   ["keyword parity", testKeywordParity],
+  ["MR payload triage", testMrPayloadTriage],
+  ["discussion reconciliation", testDiscussionReconciliation],
+  ["staged hunk attribution", testStagedHunkAttribution],
+  ["graphql normalization", testGraphqlNormalization],
+  ["server transport", testServerTransport],
   ["plugin.json manifest", testPluginManifest],
   ["skill frontmatter", testSkillFrontmatter],
+  ["Agent Skills spec conformance", testSkillSpecConformance],
   ["declared files exist", testDeclaredFilesExist],
 ];
 
