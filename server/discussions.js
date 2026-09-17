@@ -77,24 +77,15 @@ function threadState(notes) {
 /**
  * The discussions trimmed to what a report and Step 10 consume, with a summary of what
  * was dropped. Lives here, beside the counter, so "resolved" means one thing in this
- * power and the fetch script re-derives nothing.
+ * power. Measured need: an untrimmed real payload ran 30,200 of 32,254 bytes and
+ * overran the tool-result limit, costing five extra calls to work around.
  *
- * Measured need: the untrimmed set was 30,200 of a real payload's 32,254 bytes and
- * overran the tool-result limit, after which the run wrote it to a file, read it twice
- * and deleted it. Five calls and roughly 45 seconds for data it could not mostly use.
- *
- * What goes, and why each is safe to drop:
- *
- * - **System notes, and threads holding nothing else.** Activity log, never triaged.
- *   Counts are computed from the unfiltered set, so `threadsTotal` and `systemNotes`
- *   still report them.
- * - **Bodies of threads GitLab has already resolved.** A report renders those as a
- *   count, never as a quoted item. An excerpt survives so a resolved thread whose last
- *   note is an unanswered question can still be spotted and promoted.
- * - **Per-note `position`.** Hoisted to the thread, from its first real note, which is
- *   where a report's `file:line` comes from. Replies share it.
- *
- * Unresolved threads keep every body whole. Those are the only ones a report quotes.
+ * Dropped: system notes and threads holding nothing else (activity log, never triaged
+ * — `threadsTotal`/`systemNotes` still count them from the unfiltered set), and full
+ * bodies of already-resolved threads (kept as a short excerpt so an unanswered
+ * question can still be spotted and promoted). Per-note `position` is hoisted to the
+ * thread. Unresolved threads keep every body whole, since those are the only ones a
+ * report quotes.
  *
  * @param {Array<object>} discussions Unfiltered `.../discussions` entries.
  * @param {number} [excerptAt] Characters of a resolved note's body to keep.

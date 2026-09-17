@@ -124,13 +124,13 @@ If the user wants only open items, filter to `resolved: false` **after** fetchin
 
 ## Step 3 — Verify the Jira ticket (batch 2, before the report)
 
-Run it quietly, split across two batches. `getAccessibleAtlassianResources` takes no arguments, so it goes out in **batch 1** with the MR fetch. The reads that need a ticket key — `getJiraIssue` and `getTransitionsForJiraIssue` — go out together in **batch 2**: **issue both in the same turn.** The transition list is a property of the issue, not of the status you're about to read, so waiting for `getJiraIssue` to return before asking for it spends a round trip on nothing.
+Identify and validate the ticket here. **Do not transition it here, and do not ask about transitioning it here** — the transition is item 2 of Step 5's closing list, and Step 6 applies it. Run it quietly: nothing about Step 3 reaches the user except the status row on the report.
 
-**Batch 2, not batch 3, and that is the change that made the report whole.** The key is readable off batch 1's `title` and `sourceBranch` the moment that call returns, so nothing forces this behind the user's reply — and the ticket's status is one of the facts they need in order to answer the report. Reading it afterwards is what used to push the board question into a separate message a turn later.
+`getJiraIssue` and `getTransitionsForJiraIssue` go out together in **batch 2**: **issue both in the same turn.** The transition list is a property of the issue, not of the status you are about to read, so waiting for the first to return before asking for the second spends a round trip on nothing.
 
-**The one case that serializes:** batch 1's sources disagree about the key, or the title carries none. Then the Jira reads wait until the reconciliation below has settled on one `(hostname, key)` pair — a read against a guessed key is worse than a round trip, and a _write_ against one is worse again.
+**The one case that serializes:** batch 1's sources disagree about the key, or the title carries none. Then the Jira reads drop out of batch 2 and wait until reconciliation has settled on one `(hostname, key)` pair — a read against a guessed key is worse than a round trip, and a _write_ against one is worse again.
 
-Identify and validate the ticket here. **Do not transition it here, and do not ask about transitioning it here** — the transition is item 2 of Step 5's closing list, and Step 6 applies it. The full identity-reconciliation branch table and status classification are in `jira.md`.
+**Batch 2, not batch 3, and that is the change that made the report whole.** The key is readable off batch 1's `title` and `sourceBranch` the moment that call returns, so nothing forces the ticket read behind the user's reply — and its status is one of the facts they need in order to answer the report. Reading it afterwards is what used to push the board question into a separate message a turn later.
 
 ## Step 4 — Classify each comment from what it says
 

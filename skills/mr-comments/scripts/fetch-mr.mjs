@@ -1,30 +1,24 @@
 #!/usr/bin/env node
 /**
  * Batch 1's merge-request fetch: one GraphQL call for the MR *and* its discussions.
- *
- * Measured on two real MRs: ~10.5–13.4 KB against two REST calls at ~28–30 KB, and no
- * truncation path, since field selection sets the size.
+ * Measured on two real MRs: ~10.5–13.4 KB against two REST calls at ~28–30 KB, with no
+ * truncation path since field selection sets the size.
  *
  * Why this is a script: `--field iid=508` coerces to a number and GraphQL rejects it
  * (`$iid: String!`), and a hand-written query drifts from the fields the reconciler
- * needs. Both have to be right every time.
+ * needs.
  *
- * **The GitLab host flag is `--instance`, and must never be renamed to `--host`.**
- * Agent shells screen commands for long-running processes, and `node … --host <h>` is
- * the shape of a dev server: the check fires, the run is told the command "appears to
- * start a server (contains port or host)", and the only ways past are to abandon the
- * fetch or to override a safety gate. Observed on a real run, which chose the
- * override. `--instance` carries no dev-server token, so nothing needs overriding.
+ * **The GitLab host flag is `--instance`, never `--host`.** Agent shells screen
+ * commands for long-running processes, and `--host <h>` reads as a dev server —
+ * observed forcing a real run through a safety-gate override.
  *
- * **It also triages and reconciles here, and prints only the result.** The payload is
- * already in this process; the decision modules are pure functions in the same
- * package. Printing the raw ~10 KB response for a caller to hand back to
- * `triage_graphql_mr` sends it *out through the model and back*, which costs far more
- * than the fetch and, observed on a real run, fails: a payload that large arrived as a
- * string instead of an object, and the recovery was to start trimming note fields —
- * the exact way `resolvable` has been dropped before, now reached by a different road.
- * So the round trip is removed rather than warned about. `--raw` restores the old
- * behaviour, and is the automatic fallback when the modules aren't reachable.
+ * **It also triages and reconciles here, printing only the result.** The decision
+ * modules are pure functions in the same package, so handing the raw ~10 KB response
+ * back out to be re-passed to `triage_graphql_mr` sends it through the model and back
+ * for nothing — and, observed on a real run, arrived as a string and got "fixed" by
+ * trimming note fields, the same way `resolvable` has been dropped before. `--raw`
+ * restores the old behaviour, and is the automatic fallback when the modules aren't
+ * reachable.
  *
  * Needs `glab` on PATH and authenticated.
  */
@@ -100,28 +94,14 @@ if (!project || !iid) {
 const encoded = project.split("/").map(encodeURIComponent).join("%2F");
 
 /**
- * Resolve an executable to an absolute path, once, in-process. **Never spawn a bare
- * command name.**
+ * Resolve an executable to an absolute path once, in-process, so every later call is
+ * immune to a writable `PATH` entry substituting its own binary (CWE-426). Skips
+ * non-absolute `PATH` entries, which the OS itself would not. This does **not** claim
+ * the surviving directories are unwriteable; `GLAB_PATH`/`GIT_PATH` pin the binary
+ * outright when a caller needs a hard guarantee.
  *
- * `execFileSync("git", …)` leaves the lookup to the OS at spawn time, against whatever
- * `PATH` happens to be — so any writable directory earlier in `PATH` can substitute its
- * own `git` (CWE-426, untrusted search path). Two things here address that:
- *
- * 1. **The lookup happens here, not at spawn time**, and every later call uses the
- *    absolute result. Resolving via `where`/`which` would not achieve this: those are
- *    themselves found on `PATH`, so the finder is as shadowable as the target.
- * 2. **`PATH` entries that are not absolute are skipped**, which the OS would not do.
- *    A relative entry — and on some systems the empty entry, meaning the current
- *    directory — is precisely the writable directory this class of attack needs.
- *
- * What it deliberately does **not** claim is that the surviving directories are
- * unwriteable. That isn't portably checkable (Windows ACLs aren't in `st_mode`), and an
- * attacker who can already write to a system `PATH` directory owns the session whatever
- * this script does. Where a caller needs a hard guarantee, `GLAB_PATH` / `GIT_PATH` pin
- * the binary outright and skip the search.
- *
- * Returns `null` when nothing was found. Callers degrade or fail — **never** by falling
- * back to the bare name, which would hand the lookup straight back to spawn time.
+ * Returns `null` when nothing was found. Callers degrade or fail — never fall back to
+ * the bare name, which hands the lookup back to spawn time.
  */
 function resolveBin(name, envVar) {
   const pinned = proc.env?.[envVar];

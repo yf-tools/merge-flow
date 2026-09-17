@@ -89,7 +89,14 @@ const PREFERRED_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0];
 const FALLBACK_PROTOCOL_VERSION = "2024-11-05";
 
 const SERVER_NAME = "mr-review-checks";
-const SERVER_VERSION = "1.0.0";
+/**
+ * Tracks the power's version in `plugin.json`, not its own release cadence. The server ships
+ * only inside this power and is never installed separately, so two numbers would only ever
+ * confuse a bug report — a tester reading "server 1.0.0" out of a handshake while the power
+ * says 1.5.0 has to be told the two are unrelated. `server/package.json` and the assertions
+ * in dev/test.mjs pin all three together so they cannot drift apart again.
+ */
+const SERVER_VERSION = "1.5.0";
 
 function negotiateProtocolVersion(requested) {
   if (typeof requested !== "string" || requested.length === 0) return FALLBACK_PROTOCOL_VERSION;

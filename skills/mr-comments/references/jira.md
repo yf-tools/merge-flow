@@ -46,6 +46,12 @@ If Atlassian tools are unavailable, show the verified ticket URL and the confirm
 
 ## The time question's details
 
+Ask once, in one line, then 🛑 wait. This is the base the rest of this section modifies:
+
+```text
+Pushed and threads resolved. `{TICKET-KEY}` is ready to move to **{approved target status}**, and I'll add a short comment there naming what was addressed. How much time should I log against it? I'll send all of it together. (`1h`, `30m`, `2h 30m` — or skip)
+```
+
 **Include the ticket's existing time figures in that line, from the re-read above — not from Step 3.** Step 3 fetched `timetracking` so the question could exist at all; the values you actually show come from the re-read. Append whatever of `originalEstimate`, `timeSpent`, and `remainingEstimate` came back:
 
 > … (currently `{timeSpent}` logged against a `{originalEstimate}` estimate, `{remainingEstimate}` remaining). How much time should I log?
@@ -80,6 +86,18 @@ So: the count of threads actually replied to and resolved, one clause on what ch
 
 **A failed comment is reported, not retried silently, and it holds nothing back.** The transition and the worklog are independent of it; report each result on its own terms, exactly as the transition and worklog already are.
 
+## The write batch — all three in one turn
+
+Then, once they answer, **issue every Jira write in one turn:** SKILL.md carries the ordering rule; this is the shape.
+
+```text
+transitionJiraIssue    → {the transition matched above}                                   # omit when there's none
+addCommentToJiraIssue  → cloudId: {verified}, issueIdOrKey: {verified key}, commentBody: "{what was addressed}"
+addWorklogToJiraIssue  → cloudId: {verified}, issueIdOrKey: {verified key}, timeSpent: "{duration}"   # omit when skipped
+```
+
+`cloudId` and `issueIdOrKey` are the values retained from Step 3, never re-derived from the MR title at this point in the run.
+
 ## Verifying the transition result
 
 Call `transitionJiraIssue`, then re-read the issue and verify the resulting exact status — the write isn't finished until the server has told you what status it produced, and that value is what the closing line quotes. A successful API response without the expected resulting status is not sufficient evidence. Report transition failures as failures; never claim Jira is back in review when it is not.
@@ -87,6 +105,12 @@ Call `transitionJiraIssue`, then re-read the issue and verify the resulting exac
 **One exception, and it's the common case: when the transition response itself names the resulting status, that _is_ the read-back.** `transitionJiraIssue` returning `{"success": true, "statusName": "TO REVIEW"}` is the server reporting the post-write status; a follow-up `getJiraIssue` asking the same question adds a round trip and no evidence. Skip the extra call, quote `statusName`, and only issue a separate `getJiraIssue` when the response carries no status — or when it carries one that isn't the approved target, which is a failure to report rather than a value to quote.
 
 ## Reporting both results
+
+**Then one closing line, with each result stated separately:**
+
+```text
+Logged `{duration}` against `{TICKET-KEY}`, commented on the ticket, and it's now **{verified status}**.
+```
 
 The closing line states both separately, because the two can disagree. A worklog that landed next to a transition that failed is _"Logged 2h. The transition to TO REVIEW failed — {exact error}; the ticket is still {status}."_ Never let one success imply the other, and never report a status you didn't read back.
 

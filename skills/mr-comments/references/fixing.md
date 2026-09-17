@@ -32,6 +32,18 @@ This is the phase's whole reason for existing, and it is counter-intuitive enoug
 
 `git status --short` cannot tell you about any of this. It prints `M file.ts` whether the file holds one line of your change or forty lines from three sources. Running `git status` and then committing is not verification — it confirms _which files_ changed and tells you nothing about _what_ changed in them.
 
+## Calling `attribute_staged_hunks` — the four inputs
+
+```text
+attribute_staged_hunks
+  diff_text:       {raw git diff --cached output}
+  approved_files:  {files carrying a fix for an approved review comment}
+  formatter_files: {files the formatter's own output NAMED as changed}
+  conflict_files:  {files changed resolving an approved merge conflict, if any}
+```
+
+**Three inputs, three different questions — never merge them.** `approved_files` traces to a reviewer's comment; `formatter_files` only ever holds paths the formatter's own output *named*; `conflict_files` holds an approved merge resolution. Passing a guess, or filing a resolution under `approved_files`, launders the guess into the tool's output — which then reads as the tool's verdict rather than yours.
+
 ## Reading `attribute_staged_hunks`' output
 
 It returns `unexplainedFiles`, `needsJudgement` (every hunk in a file that does have a basis, one entry each), `files` (per-file counts), `totals`, `numstat`, `resolutionFiles` and `mixedFiles`, plus binary and renamed files.
@@ -52,6 +64,13 @@ Then work through what it gave you:
 2. **Give every `needsJudgement` hunk a verdict**, tracing it to a specific approved review comment or to the formatter you just ran. This is the part the tool explicitly cannot do for you.
 3. **Any hunk you cannot attribute is a 🛑 stop.** Do not rationalise it, and in particular do not attribute it to the formatter unless the formatter's own output says it changed that file — which is also why you must not pass a guessed path in `formatter_files`. A formatter that printed _"no files changed"_ did not silently edit anything: if unexplained hunks exist after that output, the formatter is ruled out, not the explanation.
 4. **Never guess at the origin of a change you didn't make.** "The prettier config must strip this" and "some plugin probably did it" are inventions. The user is the cheapest and most reliable source of truth about their own working tree, and asking costs one turn while committing their unrelated work into your MR costs them a dirty diff a reviewer will ask about.
+
+   The ask, and note that it says everything is still staged so they know nothing was lost:
+
+   ```text
+   `git diff --cached` includes changes I can't trace to any review comment: {list the hunks, file by file, one line each}. Did you edit these files while I was working, or should they not be in this commit? I've left everything staged and haven't committed.
+   ```
+
 5. **Unstage rather than include.** If the user confirms an unrelated hunk, `git restore --staged {file}` is wrong — it would drop your change too. Offer instead to keep their work in the tree and commit only your files, or to let them commit theirs separately first. Never resolve this by discarding anything.
 
 ### Report line counts from the diff, never from memory

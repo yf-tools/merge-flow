@@ -33,28 +33,14 @@ const cwd = flag("cwd", proc.cwd());
 const logCount = Number(flag("log-count", "40"));
 
 /**
- * Resolve an executable to an absolute path, once, in-process. **Never spawn a bare
- * command name.**
+ * Resolve an executable to an absolute path once, in-process, so every later call is
+ * immune to a writable `PATH` entry substituting its own binary (CWE-426). Skips
+ * non-absolute `PATH` entries, which the OS itself would not. This does **not** claim
+ * the surviving directories are unwriteable; `GIT_PATH` pins the binary outright when
+ * a caller needs a hard guarantee.
  *
- * `execFileSync("git", …)` leaves the lookup to the OS at spawn time, against whatever
- * `PATH` happens to be — so any writable directory earlier in `PATH` can substitute its
- * own `git` (CWE-426, untrusted search path). Two things here address that:
- *
- * 1. **The lookup happens here, not at spawn time**, and every later call uses the
- *    absolute result. Resolving via `where`/`which` would not achieve this: those are
- *    themselves found on `PATH`, so the finder is as shadowable as the target.
- * 2. **`PATH` entries that are not absolute are skipped**, which the OS would not do.
- *    A relative entry — and on some systems the empty entry, meaning the current
- *    directory — is precisely the writable directory this class of attack needs.
- *
- * What it deliberately does **not** claim is that the surviving directories are
- * unwriteable. That isn't portably checkable (Windows ACLs aren't in `st_mode`), and an
- * attacker who can already write to a system `PATH` directory owns the session whatever
- * this script does. Where a caller needs a hard guarantee, `GIT_PATH` pins the binary
- * outright and skips the search.
- *
- * Returns `null` when nothing was found. Callers fail — **never** by falling back to the
- * bare name, which would hand the lookup straight back to spawn time.
+ * Returns `null` when nothing was found. Callers fail — never fall back to the bare
+ * name, which hands the lookup back to spawn time.
  *
  * Duplicated in `fetch-mr.mjs` rather than shared, for the same reason `MR_QUERY` is:
  * a third file under `scripts/` would break the layout the spec test pins. A test

@@ -6,26 +6,17 @@
  *
  * `--redact` replaces your home path, GitLab username, GitLab host, repo path and branch
  * name with placeholders, so the output can be pasted into a bug report without being
- * read first. Every diagnostic fact survives it. Credential scrubbing is separate and
- * always on; see `scrubSecrets`.
+ * read first. Credential scrubbing is separate and always on; see `scrubSecrets`.
  *
- * Why this exists: every prerequisite of this power fails *quietly and plausibly*, and
- * each one looks like a bug in the power rather than a gap in the setup.
+ * Every prerequisite of this power fails quietly and plausibly, and reads as a bug in
+ * the power rather than a gap in the setup: a stale MCP server, an unapproved tool, a
+ * missing Atlassian server, an unauthenticated `glab`. This reports what is actually
+ * wrong and what it will cost. It changes nothing: no writes, no network beyond
+ * `glab auth status`, no git mutations.
  *
- *   - A stale MCP server keeps serving the previous tool list, so a fix appears not to
- *     have landed.
- *   - Declining the five tool-approval prompts one at a time makes a first run look slow.
- *   - No Atlassian MCP server means the workflow correctly refuses to fake a Jira check
- *     and stops to ask by hand, which reads as broken.
- *   - `glab` present but unauthenticated fails at the first API call, several steps in.
- *
- * So this reports what is actually wrong, and what each missing piece will cost. It
- * changes nothing: no writes, no network beyond `glab auth status`, no git mutations.
- *
- * Why this is at the package root rather than under `skills/mr-comments/scripts/`: those
- * two scripts are workflow steps the agent runs mid-task, and a test pins that directory
- * to exactly those two. This is a setup tool a person runs by hand, about the install
- * rather than about any MR.
+ * Lives at the package root rather than under `skills/mr-comments/scripts/`: those two
+ * are workflow steps the agent runs mid-task, and a test pins that directory to exactly
+ * those two. This is a setup tool a person runs by hand.
  *
  * Exit code is 0 when every required check passes, 1 when one does not.
  */

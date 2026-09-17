@@ -133,14 +133,14 @@ how a restructure silently removes the thing that catches a skipped gate.
 ### Pass A — DONE, and it was two splits rather than three
 
 **The original plan here was wrong about which files needed splitting.** The test is not size, it
-is whether a file's sections are read in *different batches*. Measured per-section:
+is whether a file's sections are read in _different batches_. Measured per-section:
 
-| Reference | was | split? | why |
-| --- | --- | --- | --- |
-| `reporting.md` | 22,002 | **yes → 3** | Step 5 (batch 1), 6b (after batch 4), 8 (Step 7's batch) |
-| `jira.md` | 20,569 | **yes → 2** | Step 3 (batch 1) and Step 11 (the last thing the run does) |
-| `investigating.md` | 22,368 | **no** | Steps 1–4 are *all* batch 1 — splitting turns one read into four in the same turn, which is strictly worse |
-| `fixing.md` | 21,256 | **no** | almost entirely Step 7 already |
+| Reference          | was    | split?      | why                                                                                                        |
+| ------------------ | ------ | ----------- | ---------------------------------------------------------------------------------------------------------- |
+| `reporting.md`     | 22,002 | **yes → 3** | Step 5 (batch 1), 6b (after batch 4), 8 (Step 7's batch)                                                   |
+| `jira.md`          | 20,569 | **yes → 2** | Step 3 (batch 1) and Step 11 (the last thing the run does)                                                 |
+| `investigating.md` | 22,368 | **no**      | Steps 1–4 are _all_ batch 1 — splitting turns one read into four in the same turn, which is strictly worse |
+| `fixing.md`        | 21,256 | **no**      | almost entirely Step 7 already                                                                             |
 
 Ten references became fifteen, and **both ceiling-hitters are gone**: `reporting.md` 22,002 →
 12,221, `jira.md` 20,569 → 12,529. New files are `scope-gate.md` (3,271), `summary-gate.md`
@@ -167,7 +167,7 @@ umbrella heading, while the index row for `checkout.md` claimed that content. `c
 not contain `transitionJiraIssue` at all.
 
 So a run at Step 6 read `checkout.md` in batch 3 and would not find the procedure. It appeared
-only later in `fixing.md`, which is read at Step 7 — *after* the transition should already have
+only later in `fixing.md`, which is read at Step 7 — _after_ the transition should already have
 happened. The index row was not merely stale, it was false, and the sequence was unrunnable as
 written. Moved into `checkout.md` between the checkout and the per-thread reads, which is the
 order Step 6 actually runs in: check out, move the board, then read the code.
@@ -186,19 +186,19 @@ part that catches misfiling: a marker in two references means either a duplicate
 (invariant 4) or one copy in the wrong place, and both need a human look.
 
 **Verified by sabotage in both directions, not by assuming it runs.** Re-adding the Step 6
-transition heading to `fixing.md` fires *"no other reference carries checkout.md's procedure"*;
-renaming it out of `checkout.md` fires *"checkout.md still holds the procedure its index row
-promises"*. Both restored, suite green at 1,024.
+transition heading to `fixing.md` fires _"no other reference carries checkout.md's procedure"_;
+renaming it out of `checkout.md` fires _"checkout.md still holds the procedure its index row
+promises"_. Both restored, suite green at 1,024.
 
 It also asserts every reference is either step-owning or one of four declared cross-cutting files
 (`failures.md`, `batching.md`, `user-mistakes.md`, `glab-tooling.md`), so a new reference that is
 neither has to be classified deliberately rather than drifting in unowned.
 
 **Two cheaper approaches were tried first and both failed on false positives.** Comparing step
-numbers in a file's headings against the steps its index row names flags `failures.md` (*"The Step
-11 re-read skipped because no transition was needed"* — an evidence entry, not a procedure) and
-`jira-identity.md` (*"Why the transition question defers to Step 6"* — Step 3 explaining a
-deferral). Heading text cannot distinguish *mentions* step N from *is* step N's procedure. A
+numbers in a file's headings against the steps its index row names flags `failures.md` (_"The Step
+11 re-read skipped because no transition was needed"_ — an evidence entry, not a procedure) and
+`jira-identity.md` (_"Why the transition question defers to Step 6"_ — Step 3 explaining a
+deferral). Heading text cannot distinguish _mentions_ step N from _is_ step N's procedure. A
 hand-picked marker per file can, and costs one line each.
 
 **Known limit:** the marker table is hand-maintained, so it catches a procedure that moved and a
@@ -228,7 +228,7 @@ a run reads at that step. Check for a second copy before planning a move: deleti
 relocating and carries no reachability risk.
 
 **Step 9's move also fixed a contradiction.** The resident three-option template was rendered
-*inside a blockquote*, immediately after the instruction saying never to use a blockquote because
+_inside a blockquote_, immediately after the instruction saying never to use a blockquote because
 it collapses the options into one unreadable line. `publishing.md` carried the same prohibition.
 An agent copying the shape would have broken the rule it was illustrating. The template now sits
 in `publishing.md` as a ```text fence, matching every other template in the corpus.
@@ -387,6 +387,7 @@ back around as if it were new.
   "does this row have an original elsewhere?" — and if it does, the row is a liability whatever
   its overlap score. Watch for the same error in the other direction before trusting any future
   settled entry that rests on a similarity metric.
+
 - **Relocating step-local detail one section at a time, as a way to shrink `SKILL.md`.**
   This is the narrow version, and it is closed: of ~4,100 tokens of step-local detail, only
   the conflict lane's share saved a review-lane run anything, and **that one returned 441
@@ -492,3 +493,143 @@ back around as if it were new.
 - **Step 9 and Step 11's time question thinned.** 747 → 550 and 706 → ~500, almost entirely by
   deleting paragraphs that already existed in `publishing.md` and `jira.md`. Step 9's move also
   removed a template rendered in a blockquote directly beneath the rule forbidding blockquotes.
+- **Pass B step-body relocation, Steps 7 and 11.** Step 7 1,307 → **346**, Step 11 1,096 → **681**.
+  SKILL.md 19,665 → **18,181 tok**, share 33.4% → **31.5%**, 629 → 571 lines. Suite **1,027**.
+
+  **The 8%-overlap figure that made this look unpromising was wrong**, and the reason matters.
+  Shingle overlap measures _phrasing_, not _meaning_: Step 7 scored 8% against `fixing.md` and
+  turned out to be 74% reducible, because both files said the same things in different words.
+  This is the third time a similarity metric has misled a decision here (the Quick Reference, the
+  heading-vs-index check, now this). **Treat any overlap score as a lower bound on duplication,
+  never an estimate of it** — the reliable method is probing for the _rule_, one distinctive
+  fragment at a time, which is what the two `_probe` scripts did before each move.
+
+  Step 7 was almost entirely deletion once probed: ten of its fourteen pieces were already in
+  `fixing.md`, and only four were resident-only (the tool's input block, the three-inputs rule,
+  the "who edited this" ask, staging by name — and staging by name turned out to be there too,
+  under different capitalisation).
+
+  **Two templates were nearly lost.** Step 11's ask and its closing line were resident-only, and
+  the first draft deleted them without moving them. `jira.md` was left saying "include the time
+  figures in **that line**" with no line defined. The suite caught both as missing corpus phrases.
+  This is the failure mode of relocation that deletion does not have, and it is why the remaining
+  steps should each be probed before cutting rather than cut and then checked.
+
+- **`assertNoGrowingDuplication`.** Invariant 4 as a measurement instead of a maxim: passages of
+  12+ consecutive shared words between any two corpus files, budgeted at the measured **54** and
+  ratcheted downward only. Sabotage-verified — copying one paragraph from `lessons.md` into
+  SKILL.md takes it to 55 and fails.
+
+  It immediately found something reading had not: the paragraph reading _"The layout rules are not
+  repeated here"_ had itself been copied into three files. Also cut the SKILL.md ↔ `batching.md`
+  overlap from 9 passages to 1, and the `user-mistakes.md` intro from 5 to none.
+
+  **54 is not a clean bill of health.** Some of the remainder is legitimate — `failures.md` exists
+  to quote the run behind a rule, so it necessarily restates the rule. The value is that the
+  number cannot grow. Lower the budget whenever you reduce it.
+
+- **Pass B, remaining step bodies.** Steps 12, 8, 10, 0b and 6 relocated. SKILL.md **18,181 →
+  17,001 tok**, share 31.5% → **29.6%**, 571 → 514 lines. Suite **1,028**, tsc clean.
+
+  | step | before | after   | note                                                     |
+  | ---- | ------ | ------- | -------------------------------------------------------- |
+  | 0b   | 945    | **330** | lane-comparison table → `conflicts.md`                   |
+  | 12   | 557    | **341** | pure deletion, all of it was in `lessons.md`             |
+  | 10   | 580    | **406** | preview + both API calls → `publishing.md`               |
+  | 8    | 435    | **370** | preconditions and section list were in `summary-gate.md` |
+  | 6    | 529    | **424** | procedure → `checkout.md`, and two wrong pointers fixed  |
+
+  **Two more routing bugs of the Step 6 class, both found by reading section order rather than by
+  any test.** (1) The malformed-URL rule sat at the _end of Step 0b_, three sections past where it
+  belongs, behind the conflict resolution plan gate — a run parsing a URL would never reach it in
+  order. Moved into Step 0. (2) Step 6 pointed at `references/investigating.md` for the checkout
+  paths, the per-thread checklist and the two-reads cap; `investigating.md` contains none of them
+  and `checkout.md` contains all four. Both pointers now name `checkout.md`.
+
+  **That makes three misfilings in one session, all invisible to the suite.** `assertStepOwnership`
+  catches a _procedure_ in the wrong file; it does not catch a _pointer_ naming the wrong file.
+  Worth building: assert that every `references/X.md` mentioned inside a step's section is the file
+  the index row pairs with that step, or is explicitly cross-lane. That would have caught bug (2).
+
+  **`dev/probe-step.mjs` is now a permanent tool.** It reports, per step, which passages already
+  exist in the reference that step hands off to. Every move this round was planned with it, and it
+  is the antidote to the overlap-score mistake recorded above — it probes for the rule, sentence by
+  sentence, instead of scoring phrasing.
+
+### Where Pass B stops, and why
+
+**29.6% resident, 17,001 tokens.** The remaining sections are 250–760 tokens each and are almost
+entirely gate declarations: the report gate's rules (1,753), the thirteen rules (1,300), the router
+index (978), the batch plan (1,533), Step 13's stop list, and each step's stop property. The probe
+now reports 1-of-8 and 1-of-11 deletable on Steps 1–4 and Step 5 — that is the floor showing
+through, not a gap.
+
+Getting materially below ~16,000 means moving gate declarations into references, which is the one
+thing the disclosure finding says not to do. **Recommend stopping here and validating with a live
+run** before deciding whether that constraint is worth relaxing.
+
+- **A markdown formatter corrupted SKILL.md's frontmatter, and `.prettierignore` now blocks it.**
+  Mid-session, with the file open in the editor, Prettier's markdown printer rewrote the opening
+  `---` as `***`, turned the closing `---` into a setext heading underline, stripped the indentation
+  that nested `version` and `author` under `metadata:`, and escaped `#note_` to `#note\_`.
+  **Frontmatter is how Kiro identifies a skill, so that silently disabled the whole thing.** The
+  suite caught it immediately (*"no parseable YAML frontmatter"*), and it was restored verbatim from
+  `git show HEAD:` rather than retyped.
+
+  A scan for the same fingerprints (`***` as a rule, 6+ dash underlines, `\_`, `\*`) found no other
+  file affected. `.prettierignore` now covers `skills/`, `POWER.md`, `README.md` and `dev/TODO.md`,
+  with the reasoning written into the file: the suite pins ~1,055 exact strings **including emphasis
+  characters** (Prettier swaps `_is_` for `*is*`, which breaks a pin), the templates depend on blank
+  lines that CommonMark treats as significant, and reference files are byte-budgeted so table
+  re-padding moves the number.
+
+  **This is the second time formatting silently changed meaning** — the TODO's tables were re-padded
+  earlier in the session, which is what made one `str_replace` fail. Worth remembering that "just
+  formatting" is not a safe category in this repo.
+- **Version skew closed (was item 5).** `server.js` hardcoded `SERVER_VERSION = "1.0.0"` and
+  `server/package.json` agreed with it, while `plugin.json` and `SKILL.md` said `1.5.0` — a
+  three-way skew, not two-way. All four are now `1.5.0`, and a new assertion pins
+  `serverInfo.version` to `plugin.json` as well as to `server/package.json`, so the three cannot
+  drift apart again. **`server/` changed, so the MCP server needs a reconnect before the next run.**
+- **`assertStepPointers`.** The half of misfiling `assertStepOwnership` cannot see: a step section
+  naming the wrong reference. Both files exist and both hold what they claim, so nothing fails —
+  which is exactly how Step 6 spent the session pointing at `investigating.md` for the checkout
+  paths, the per-thread checklist and the two-reads cap, none of which are in that file. Every
+  `references/*.md` named inside a step's own section must now be that step's own reference or one
+  of two allowlisted cross-references, each with its reason recorded: Steps 1–4 → `jira-identity.md`
+  (Step 3 sits inside that section) and Step 9 → `conflicts.md` (post-push conflict re-read).
+  Sabotage-verified by repointing Step 6 back at `investigating.md`. Suite 1,029 → **1,055**.
+- **`investigating.md` headroom, and a fourth stale pointer.** 22,368 → **22,207 bytes** (793 free)
+  by cutting its Step 3 section down to what SKILL.md's batch plan does not already say. The section
+  also still pointed at `jira.md` for the identity-reconciliation table, which moved to
+  `jira-identity.md` during Pass A. **It evaded the no-chaining assertion by writing `jira.md`
+  without the `references/` prefix.** The replacement names no file at all.
+
+  A scan found eight other bare `foo.md` mentions between references; all are accurate, and most are
+  narrative attributions (`**Produced:** the condensed-diff rule in \`fixing.md\``) rather than
+  read-this pointers. **Residual risk, not covered by any guard:** a bare mention can go stale
+  silently. Not worth a guard for eight accurate mentions, but it is how this one got through.
+- **Trimmed the largest comment blocks in the code (not the skill corpus).** Six blocks over 20
+  lines, in `preflight.mjs`, both `scripts/`, and `discussions.js`, cut to the load-bearing
+  content: kept every measured number, MR reference, and security rationale (CWE-426, the "does
+  not claim unwriteable" disclaimer); cut restated narration and duplicate examples across
+  `fetch-mr.mjs` and `git-context.mjs`'s two copies of the same `resolveBin` doc. Left
+  `hunks.js`'s JSDoc, `probe-step.mjs`'s header and the two `test.mjs` blocks alone — each is
+  already load-bearing explanation for something non-obvious, not narration.
+
+  **The trim broke six assertions, all self-inflicted, none a lost rule:**
+  - Two pins on the literal string `does **not** claim` — my rewrite split "not" and "claim"
+    across a line wrap, and separately still needed the disclaimer's substance restored.
+  - One pin on the heading phrase `Why this is a script` — cut during the rewrite, restored.
+  - One ASCII-output check — an em dash landed in a comment; `testPreflight` scans the whole
+    source file for non-ASCII bytes on the theory that a comment's em dash risks getting
+    copy-pasted into an actual `console.log` string later. Two more em dashes turned up the
+    same way during the fix and were replaced with colons/periods.
+  - Two keyword-parity failures, **unrelated to this edit**: `POWER.md`'s keyword list had
+    `"note_"` where `plugin.json` has `"note"` — the markdown formatter's `#note_` escaping
+    reaching into a YAML list item, not something this session's edits touched directly.
+    Fixed while here since it was one line and already caught.
+
+  Net: comment line counts down without any pinned rule lost — `preflight.mjs` 635→626,
+  `git-context.mjs` 179→165, `fetch-mr.mjs` 417→397, `discussions.js` 264→255. Suite still
+  **1,055**, tsc clean.

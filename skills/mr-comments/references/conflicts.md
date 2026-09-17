@@ -2,13 +2,38 @@
 
 Read this as soon as you're in the conflict-first lane (SKILL.md Step 0b) and **before you render the plan gate** — the gate's template is in this file, not in SKILL.md. SKILL.md keeps the lane decision, the fact that the gate replaces Step 5 and is a hard stop, and the pointer here. Everything you need in order to actually fill it in is below.
 
+## What the conflict-first lane changes, step by step
+
+SKILL.md declares the lane choice and that the gates are identical either way. This is what actually differs inside each step.
+
+| Step | Review lane | Conflict-first lane |
+| --- | --- | --- |
+| 0–3 | As written | Identical — including `triage_mr_payload`, the reconciliation, and the Jira identity check |
+| 4 classify | One classification per thread | No classification: the threads aren't work items here. Open comments still tell you which side of a conflict was reviewer-requested |
+| 5 report | Triage report gate | **Resolution plan gate** (template below). The conflict is the *subject*, so it does not also occupy the Blockers row |
+| 6 | Checkout, the approved Jira move, then read the files the threads point at | Same, plus **both sides** of every conflicted region. **The merge itself is not part of the checkout** — it waits for the plan gate |
+| 6b | New scope from an answered Question or from what the reads turned up | Same, and it applies to anything the resolution turns out to need beyond the plan you presented |
+| 7 | Fixes, one at a time | The resolution, one region at a time. Files go in `conflict_files`, never `approved_files`. **Drops out entirely if the user resolves online** |
+| 8 | Summary gate | Same gate, before the **merge commit**. `mixedFiles` splits it in two |
+| 9 | Commit and push | Same, plus the post-push conflict re-read |
+| 10 | Preview replies, then reply and resolve | **Skipped**, unless the user also asked for the comments. Say once that you're leaving the threads alone |
+| 11 | Jira review transition + worklog | Worklog only if the user wants one. A merge-resolution normally doesn't change the ticket's review state — if you think it should, ask instead of assuming |
+| 12–13 | As written | As written |
+
+**Two of `triage_mr_payload`'s blockers mean something different in this lane, and neither is suppressed — both get *reinterpreted out loud*.** The tool is right to raise them; it doesn't know why the user is here.
+
+* **`conflicts`** is the subject of the run, not an obstacle to it. Don't put it on the Blockers row and don't ask whether to resolve first — that question is already answered. The plan gate carries the real decisions.
+* **`zero-comments`** stops the review lane because a triage report with nothing in it is worthless. Here it stops nothing: an MR can have a conflict and no feedback at all. Say once that there's no review feedback, put the count in the report as usual, and carry on. Do **not** treat this as licence to skip `reconcile_discussion_counts` — the plan gate still quotes its `countLine`, and "no comments" is a claim that needs the tool behind it.
+
+Every other blocker (wrong project, terminal state) means exactly what it means in the review lane and stops the run the same way.
+
 ## The two online paths, in full
 
 Both are checks against data already in hand from batch 1. Either can end the run in a single call, so run them before building the plan table.
 
 ### 1. Is it actually a conflict, or is the branch just behind?
 
-`detailed_merge_status: "conflict"` is a conflict. `"checking"`, `"unchecked"`, or a merge widget stuck on _"Checking ability to merge automatically"_ with `has_conflicts: false` is **not** — that's a stale or behind branch, and there is a public API for it:
+`detailed_merge_status: "conflict"` is a conflict. `"checking"`, `"unchecked"`, or a merge widget stuck on *"Checking ability to merge automatically"* with `has_conflicts: false` is **not** — that's a stale or behind branch, and there is a public API for it:
 
 ```text
 glab_api  PUT projects/{project_path_encoded}/merge_requests/{iid}/rebase
@@ -22,13 +47,13 @@ Confusing these two is how a five-second API call becomes a twenty-minute local 
 
 GitLab publishes the exact criteria for a conflict being resolvable in its own UI, and they are a good proxy for "is this simple". Every conflicting file must be:
 
-- a non-binary text file
-- under 200 KB once conflict markers are added
-- UTF-8 compatible
-- free of pre-existing conflict markers
-- present at the same path on both branches
+* a non-binary text file
+* under 200 KB once conflict markers are added
+* UTF-8 compatible
+* free of pre-existing conflict markers
+* present at the same path on both branches
 
-When all of them qualify, **offer that as an option in the plan gate rather than deciding for the user**: they can use interactive mode (pick a side per region), the inline editor (blend by hand), or — on Premium/Ultimate with Duo Agent Platform available — _Resolve conflicts → Resolve with GitLab Duo_, which resolves, commits and pushes to the source branch server-side and posts a summary comment. Either way GitLab creates a merge commit **on the source branch only**, never merging into the target, which is the same shape a local resolution produces.
+When all of them qualify, **offer that as an option in the plan gate rather than deciding for the user**: they can use interactive mode (pick a side per region), the inline editor (blend by hand), or — on Premium/Ultimate with Duo Agent Platform available — *Resolve conflicts → Resolve with GitLab Duo*, which resolves, commits and pushes to the source branch server-side and posts a summary comment. Either way GitLab creates a merge commit **on the source branch only**, never merging into the target, which is the same shape a local resolution produces.
 
 **You cannot drive any of that yourself, and must not claim to have.** There is no `/api/v4/` endpoint that resolves conflicts — the web resolver posts to a Rails route under `/-/merge_requests/{iid}/conflicts/resolve`, outside the REST API, and Duo's button is GitLab's own agent, not something this workflow invokes. The Commits API (`POST .../repository/commits`) can write files to a branch with no clone, but it has no parameter for a second parent, so it cannot create the merge commit that joins the two histories: writing "resolved" content that way leaves the branch still missing the target's commits and still conflicted. If you find yourself reaching for it to avoid a checkout, that's the wrong instinct — hand the user the UI option, or do the local merge.
 
@@ -71,13 +96,13 @@ Proceed with this plan, or resolve it online yourself? Say which rows to change 
 
 ## `git merge-tree` reports every touched file, not just conflicts
 
-When an MR has conflicts (Step 2) and you need to know _which_ files actually conflict, `git merge-tree $(git merge-base HEAD origin/{TARGET}) HEAD origin/{TARGET}` is the right tool — but its output is easy to misread, and doing so costs several turns.
+When an MR has conflicts (Step 2) and you need to know *which* files actually conflict, `git merge-tree $(git merge-base HEAD origin/{TARGET}) HEAD origin/{TARGET}` is the right tool — but its output is easy to misread, and doing so costs several turns.
 
 **This is also how you fill in the plan gate without starting the merge.** It reports conflicts against the index without touching the working tree, so the table can be built and approved before anything is modified. That ordering is the point of the gate.
 
 **It prints a section for every file that differs on both sides**, conflicted or not, each headed `changed in both` (or `added in remote` / `removed in remote`) with `base`/`our`/`their` blob lines and then a diff. Reading that file list as a conflict list overstates the problem badly: on a real run it listed a dozen files when exactly **one** had genuine conflict markers.
 
-**Grep for the conflict markers, and do not anchor the pattern.** Verified on git 2.53, the markers arrive _inside_ the diff and so carry a leading `+`:
+**Grep for the conflict markers, and do not anchor the pattern.** Verified on git 2.53, the markers arrive *inside* the diff and so carry a leading `+`:
 
 ```text
 @@ -1,3 +1,7 @@
@@ -114,7 +139,7 @@ Each hit is one conflicted region; the file it belongs to is the nearest precedi
 
 ## A conflicted MR changes the plan — say so before triaging anything
 
-**This section is the review lane, where a conflict arrives uninvited.** If the user came here _to_ fix the conflict, you're in the conflict-first lane and the plan gate replaces the question below — the conflict is the subject of the run, so it doesn't occupy the Blockers row. Everything else here still applies.
+**This section is the review lane, where a conflict arrives uninvited.** If the user came here *to* fix the conflict, you're in the conflict-first lane and the plan gate replaces the question below — the conflict is the subject of the run, so it doesn't occupy the Blockers row. Everything else here still applies.
 
 `has_conflicts: true` (usually alongside `merge_status: "cannot_be_merged"` and `detailed_merge_status: "conflict"`) means this MR cannot merge as it stands. **It is a blocker, so it goes on Step 5's report Blockers row and its question replaces the report's closing `Go ahead?`** — the report still renders in full. It is not a detail to bury below the items, and it is not something to notice later when a build fails.
 
@@ -128,14 +153,14 @@ Then wait for that answer. Why it replaces the go-ahead rather than riding along
 
 **Resolution files go in `conflict_files`, never in `approved_files`.** `attribute_staged_hunks` keeps resolution files as a separate basis (`conflict-resolution`) for the same reason the formatter basis is separate: the two answer different questions. A review fix traces to a reviewer's comment; a resolution traces to two branches touching the same lines. Fold them together and a resolution hunk — which can be a real design decision — inherits a review comment's approval without anyone deciding that. The tool returns `resolutionFiles` (what actually landed, derived from the diff rather than from your input) and `mixedFiles`.
 
-**A file in `mixedFiles` carries both, and that's the case to split.** Commit the resolution on its own, then the review fixes: `git add {resolution files}` → commit → stage the fixes → commit. Two commits also give the reviewer a readable history, where one commit mixing a merge resolution with three review fixes gives them a diff nobody can review. When the same _file_ holds both, say which hunks are which in the Step 8 summary rather than presenting the file as a single approved change — that's the one case where per-file basis genuinely isn't enough, and it's why `mixedFiles` exists as its own field.
+**A file in `mixedFiles` carries both, and that's the case to split.** Commit the resolution on its own, then the review fixes: `git add {resolution files}` → commit → stage the fixes → commit. Two commits also give the reviewer a readable history, where one commit mixing a merge resolution with three review fixes gives them a diff nobody can review. When the same *file* holds both, say which hunks are which in the Step 8 summary rather than presenting the file as a single approved change — that's the one case where per-file basis genuinely isn't enough, and it's why `mixedFiles` exists as its own field.
 
 ## After the push
 
 **Confirm the conflict actually cleared — from GitLab, after the push.** A local `git merge` that exits 0 tells you the merge succeeded locally, not that the MR can merge; GitLab recomputes `has_conflicts` asynchronously against the current target branch. So after Step 9's push completes, re-fetch the MR payload and read `has_conflicts` / `detailed_merge_status` again. Three outcomes:
 
-- **Cleared** — one line, folded into the Step 9 result. Not its own message.
-- **Still conflicted** — say so plainly and stop for a decision. Do not describe the conflict as resolved in the Step 10 replies or the Step 11 worklog comment; the target branch may have moved again while you worked.
-- **`checking` / `unchecked`** — GitLab hasn't finished recomputing. That is not a pass. Report it as pending and let the user choose whether to wait, the same as any `undetermined` check.
+* **Cleared** — one line, folded into the Step 9 result. Not its own message.
+* **Still conflicted** — say so plainly and stop for a decision. Do not describe the conflict as resolved in the Step 10 replies or the Step 11 worklog comment; the target branch may have moved again while you worked.
+* **`checking` / `unchecked`** — GitLab hasn't finished recomputing. That is not a pass. Report it as pending and let the user choose whether to wait, the same as any `undetermined` check.
 
 This is a second read of a payload you already fetched once, which is normally what "re-issue only the call that failed" argues against. It's justified here because the value genuinely changed underneath you: the whole point of the push was to change it.

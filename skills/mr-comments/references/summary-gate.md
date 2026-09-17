@@ -2,7 +2,7 @@
 
 Read this with Step 7's first validation batch, not in batch 1. It is only needed once the fixes are in, and carrying 7 KB of it through the whole run buys nothing. SKILL.md declares the gate and what a "yes" authorizes; the card, the preconditions that must hold before it is rendered, and the exact Jira wording are here.
 
-**The layout rules are not repeated here.** SKILL.md's "Formatting every report to the user" has them: one item per block, every field in its own paragraph with a blank line on both sides, and no tables for anything longer than a short fact. Breaking that one makes this unreadable whatever it contains.
+**Layout rules live in SKILL.md**, under "Formatting every report to the user".
 
 ## Step 8 — the final summary
 

@@ -2,7 +2,7 @@
 
 Read this in batch 1, with the fetch. Step 5's report is only two turns away, so a separate turn spent reading it is a round trip wasted on a local file. SKILL.md keeps what the gate blocks on and what a bare approval covers; the exact shape is here.
 
-**The layout rules are not repeated here.** SKILL.md's "Formatting every report to the user" has them: one item per block, every field in its own paragraph with a blank line on both sides, and no tables for anything longer than a short fact. Breaking that one makes this unreadable whatever it contains.
+**Layout rules live in SKILL.md**, under "Formatting every report to the user".
 
 ## Step 5 — the report
 

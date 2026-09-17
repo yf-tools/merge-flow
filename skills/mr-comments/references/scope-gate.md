@@ -4,7 +4,7 @@ Read this when a 💬 Question or ⚠️ Disagree item comes back answered, or w
 
 SKILL.md declares the gate and its stop property. What goes inside it is here.
 
-**The layout rules are not repeated here.** SKILL.md's "Formatting every report to the user" has them: one item per block, every field in its own paragraph with a blank line on both sides, and no tables for anything longer than a short fact. Breaking that one makes this unreadable whatever it contains.
+**Layout rules live in SKILL.md**, under "Formatting every report to the user".
 Two things arrive here, and neither passed through Step 5's report.
 
 **An answered 💬 Question or ⚠️ Disagree** is new scope arriving mid-run. The answer resolves the _question_; it does not approve an _implementation_. This is the most common way a well-gated run turns into an ungated one: the user supplies a decision, you see the fix clearly, and you start editing — the plan and the first `str_replace` land seconds apart, with no turn boundary in between for the user to disagree.

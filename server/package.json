@@ -1,6 +1,6 @@
 {
   "name": "mr-review-checks",
-  "version": "1.0.0",
+  "version": "1.5.0",
   "private": true,
   "type": "module",
   "description": "Zero-dependency MCP server for the decisions in mr-comments that prose can't make reliably: reading an MR payload, reconciling comment counts, enumerating staged hunks, and normalizing a GraphQL merge-request response into the shape the other three expect.",

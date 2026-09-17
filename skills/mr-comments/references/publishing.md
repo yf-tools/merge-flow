@@ -101,6 +101,35 @@ After:
 
 Shorter, same content, and it reads like the person who made the change wrote it. Length is the tell that survives every other fix: when a reply is three sentences longer than the comment it answers, something in it is decoration.
 
+## The preview's shape
+
+A reply is a full sentence, so don't put it in a table cell — a cell truncates or crushes it. One block per thread:
+
+```text
+### Proposed MR thread replies
+
+---
+
+**1. `_banner.scss:17`**
+
+→ "Switched to the directional radius mixin."
+
+---
+
+Post these replies and resolve the threads? (yes / edit #N / skip)
+```
+
+## The two calls
+
+```text
+mcp_gitlab_glab_api                                    # reply — threaded, never a general MR comment
+  args:  ["projects/{project_path_encoded}/merge_requests/{iid}/discussions/{discussion_id}/notes"]
+  flags: { "method": "POST", "field": ["body={the reply}"], "hostname": "{host}" }
+mcp_gitlab_glab_api                                    # resolve
+  args:  ["projects/{project_path_encoded}/merge_requests/{iid}/discussions/{discussion_id}"]
+  flags: { "method": "PUT", "field": ["resolved=true"], "hostname": "{host}" }
+```
+
 ## Reply and resolve — ordering and parallelism
 
 **Post replies to independent threads as parallel tool calls, not one per turn.** Each `POST` targets a different `discussion_id` and none of them depend on another thread's reply landing first, so there's no correctness reason to serialize them. Keep the publication ledger updated per call regardless of whether they ran in parallel or in sequence — the ledger is what makes partial failure recoverable, not the ordering of the calls.

@@ -542,7 +542,10 @@ function testProgressiveDisclosure() {
   const READS_WHOLE = 23_000;
   for (const r of refs) {
     const bytes = Buffer.byteLength(r.text, "utf8");
-    truthy(`disclosure: references/${r.name} is ${bytes} bytes, inside the ${READS_WHOLE}-byte read-whole limit`, bytes < READS_WHOLE);
+    truthy(
+      `disclosure: references/${r.name} is ${bytes} bytes, inside the ${READS_WHOLE}-byte read-whole limit`,
+      bytes < READS_WHOLE,
+    );
   }
 }
 
@@ -639,6 +642,75 @@ function testWorkflowPolicyContracts() {
   assertPortableCommands(docs);
   assertJiraCommentWiring(docs, marks);
   assertStepOwnership(docs);
+  assertStepPointers(docs);
+  assertNoGrowingDuplication(docs);
+}
+
+/**
+ * Invariant 4 as a measurement rather than a maxim: "a fact stated in two places will drift."
+ *
+ * Counts passages of 12+ consecutive words shared between any two files in the corpus. Twelve
+ * is long enough that shared terminology, tool names and template placeholders don't trip it,
+ * and short enough to catch a restated rule.
+ *
+ * **This is a ratchet, not a clean bill of health.** The count is well above zero and some of
+ * it is legitimate: `failures.md` exists to quote the run behind a rule, so it necessarily
+ * restates the rule. The point is that the number can only go down. Lower the budget whenever
+ * you reduce it — that is what makes the next accidental copy fail here.
+ *
+ * The manual pass this replaced was unreliable in a specific way worth recording: the
+ * layout-rule paragraph reading "**The layout rules are not repeated here**" had itself been
+ * copied into three files, and a shingle check found it while reading did not.
+ */
+function assertNoGrowingDuplication(docs) {
+  const N = 12;
+  /** Budget = the count measured when this assertion was added. Only ever lower it. */
+  const BUDGET = 54;
+
+  const files = [["SKILL.md", docs.skill], ...docs.refs.map((r) => [r.name, r.text])];
+
+  const words = (t) =>
+    t
+      .toLowerCase()
+      .replace(/```[\s\S]*?```/g, " ")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const shingled = files.map(([name, text]) => {
+    const w = words(text);
+    const set = new Set();
+    for (let i = 0; i + N <= w.length; i++) set.add(w.slice(i, i + N).join(" "));
+    return { name, w, set };
+  });
+
+  let passages = 0;
+  const worst = [];
+  for (let i = 0; i < shingled.length; i++) {
+    for (let j = i + 1; j < shingled.length; j++) {
+      const a = shingled[i];
+      const b = shingled[j];
+      // Count runs of consecutive shared shingles, so one long copied sentence counts once.
+      let runs = 0;
+      let inRun = false;
+      for (let k = 0; k + N <= a.w.length; k++) {
+        const hit = b.set.has(a.w.slice(k, k + N).join(" "));
+        if (hit && !inRun) runs++;
+        inRun = hit;
+      }
+      if (runs > 0) {
+        passages += runs;
+        worst.push(`${a.name} <-> ${b.name}: ${runs}`);
+      }
+    }
+  }
+
+  worst.sort((x, y) => Number(y.split(": ")[1]) - Number(x.split(": ")[1]));
+  truthy(
+    `duplication: ${passages} passages of ${N}+ words shared between files, budget ${BUDGET}` +
+      (passages > BUDGET ? ` — worst: ${worst.slice(0, 3).join("; ")}` : ""),
+    passages <= BUDGET,
+  );
 }
 
 /**
@@ -696,11 +768,71 @@ function assertStepOwnership(docs) {
   // Every reference either owns a step above or is one of the four cross-cutting files.
   // A new reference that is neither is unreachable-by-design or an unowned step, and the
   // author should have to say which.
-  const crossCutting = ["failures.md", "batching.md", "user-mistakes.md", "glab-tooling.md"];
-  const unclassified = refs
-    .map((r) => r.name)
-    .filter((n) => !(n in owners) && !crossCutting.includes(n));
+  const crossCutting = new Set(["failures.md", "batching.md", "user-mistakes.md", "glab-tooling.md"]);
+  const unclassified = refs.map((r) => r.name).filter((n) => !(n in owners) && !crossCutting.has(n));
   eq("step-ownership: every reference is either step-owning or declared cross-cutting", unclassified, []);
+}
+
+/**
+ * The other half of misfiling: a step section pointing at the wrong reference.
+ *
+ * `assertStepOwnership` catches a procedure that sits in the wrong file. It cannot catch a
+ * pointer that names the wrong file, because both files exist and both hold what they claim.
+ * Observed: Step 6 sent the run to `references/investigating.md` for the checkout paths, the
+ * per-thread read checklist and the two-reads cap. `investigating.md` holds none of the three;
+ * `checkout.md` holds all of them. A run following the pointer would have read a file that
+ * could not answer the question it was sent to answer, and nothing failed.
+ *
+ * So every `references/*.md` named inside a step's own section must be that step's own
+ * reference, or an explicitly listed cross-reference with a reason attached.
+ */
+function assertStepPointers(docs) {
+  const { skill } = docs;
+
+  /** [resident heading, the reference that step hands off to] */
+  const steps = [
+    ["## Step 0 — Parse the MR URL", "investigating.md"],
+    ["## Step 0b — Decide what the run is for, then pick the lane", "conflicts.md"],
+    ["## Steps 1–4 — Investigate, without touching the working tree", "investigating.md"],
+    ["## Step 5 — Present the Report (BLOCKING)", "reporting.md"],
+    ["## Step 6 — Start Work: Checkout, Jira, Then the Code", "checkout.md"],
+    ["### Step 6b — When the picture changes (BLOCKING)", "scope-gate.md"],
+    ["## Step 7 — Fix One Comment at a Time", "fixing.md"],
+    ["## Step 8 — Present the Final Summary (BLOCKING)", "summary-gate.md"],
+    ["## Step 9 — Commit and Push (only after approval)", "publishing.md"],
+    ["## Step 10 — Reply Inline and Resolve Each Thread", "publishing.md"],
+    ["## Step 11 — Return Jira to Review and Log Time", "jira.md"],
+    ["## Step 12 — Optional Follow-Up: Capture Recurring Lessons", "lessons.md"],
+    ["## Step 13 — Where this skill ends", null],
+  ];
+  const END = "## Reference files — load these when the pointer says to";
+
+  /** Cross-references that are correct, each with the reason it is not a misfiling. */
+  const allowed = {
+    // Step 3 sits inside the Steps 1–4 section, and jira-identity.md is Step 3's own file.
+    "## Steps 1–4 — Investigate, without touching the working tree": ["jira-identity.md"],
+    // The post-push conflict re-read is a conflict-lane concern reached from the review lane.
+    "## Step 9 — Commit and Push (only after approval)": ["conflicts.md"],
+  };
+
+  for (let i = 0; i < steps.length; i++) {
+    const [heading, owner] = steps[i];
+    const start = skill.indexOf(heading);
+    truthy(`step-pointers: ${heading.slice(0, 34)} is still present`, start >= 0);
+    if (start < 0) continue;
+
+    const nextHeading = i + 1 < steps.length ? steps[i + 1][0] : END;
+    const stop = skill.indexOf(nextHeading, start + heading.length);
+    const body = skill.slice(start, stop < 0 ? undefined : stop);
+
+    const named = [...new Set([...body.matchAll(/references\/([a-z-]+\.md)/g)].map((m) => m[1]))];
+    const permitted = new Set([owner, ...(allowed[heading] ?? [])].filter(Boolean));
+    eq(
+      `step-pointers: ${(/Steps? \d+b?/.exec(heading)?.[0] ?? heading).padEnd(8)} points only at its own reference`,
+      named.filter((n) => !permitted.has(n)),
+      [],
+    );
+  }
 }
 
 /**
@@ -715,7 +847,7 @@ function assertStepOwnership(docs) {
  */
 function assertJiraCommentWiring(docs, m) {
   const { skill, summaryGate, refs } = docs;
-  const { jiraFinish, timeAsk, lessons } = m;
+  const { timeAsk, lessons } = m;
   const jira = refs.find((r) => r.name === "jira.md")?.text ?? "";
 
   // Authorized at Step 8, with the transition, as one question with two answers.
@@ -738,17 +870,21 @@ function assertJiraCommentWiring(docs, m) {
 
   // Resident: the write batch names it, and points at the reference for the content rules.
   const batch = skill.slice(timeAsk, lessons);
+  // The three call names moved to jira.md's write-batch section; the resident half keeps the
+  // ordering rule and the authorization fact, which are what decide whether a write is allowed.
+  const writeBatch = jira.slice(jira.indexOf("## The write batch"), jira.indexOf("## Verifying the transition result"));
+  truthy("jira-comment: jira.md has a write-batch section", writeBatch.length > 100);
   for (const call of ["transitionJiraIssue", "addCommentToJiraIssue", "addWorklogToJiraIssue"]) {
-    truthy(`jira-comment: Step 11's batch issues ${call}`, batch.includes(call));
+    truthy(`jira-comment: the write batch issues ${call}`, writeBatch.includes(call));
   }
   truthy(
     "jira-comment: the resident file says Step 8 authorizes it, not the time question",
     batch.includes("**The comment is authorized by Step 8's Jira block, not by this question**"),
   );
-  // Ordering: it is a write, so it must sit after the time question like the other two.
+  // Ordering: it is a write, so the batch must sit after the time question, not before it.
   truthy(
-    "jira-comment: the comment write follows the time question",
-    skill.indexOf("addCommentToJiraIssue", jiraFinish) > timeAsk,
+    "jira-comment: the write batch follows the time question in jira.md",
+    jira.indexOf("## The write batch") > jira.indexOf("## The time question's details"),
   );
 
   // Evidence rule: the ledger, never the report.
@@ -767,10 +903,7 @@ function assertJiraCommentWiring(docs, m) {
     jira.includes("It is remote text a colleague reads"),
   );
   // Flatness, so nobody promises threading the API cannot do.
-  truthy(
-    "jira-comment: the API's lack of threading is stated, not implied",
-    jira.includes("no parent-comment field"),
-  );
+  truthy("jira-comment: the API's lack of threading is stated, not implied", jira.includes("no parent-comment field"));
 
   // Independence: a failed comment must not hold back the transition or the worklog.
   truthy(
@@ -784,7 +917,9 @@ function assertJiraCommentWiring(docs, m) {
   // *after* the answer, costing a round trip and a question with no figures behind it.
   truthy(
     "jira-reads: Step 11 batches the two reads into the time question's turn",
-    skill.includes("go out as one batch of two in the same turn as the time question, before you emit it — never after the answer"),
+    skill.includes(
+      "go out as one batch of two in the same turn as the time question, before you emit it — never after the answer",
+    ),
   );
   truthy(
     "jira-reads: and forbids narrating what they found",
@@ -1156,7 +1291,8 @@ function assertCorpusPhrases(corpus) {
     "**Re-issue only the call that failed. A batch is not a transaction**",
     // A getJiraIssue after a transition that already named its resulting status is a
     // round trip for evidence you were handed.
-    "when the transition response itself names the resulting status, that *is* the read-back",
+    // jira.md writes this with underscore emphasis; the deleted resident copy used asterisks.
+    "when the transition response itself names the resulting status, that _is_ the read-back",
     // Eight hunks exceeded diff_text; the run condensed the diff and took counts from
     // --numstat, which is right and now written down.
     "**When the diff is too large to pass whole, pass a condensed one — and then stop trusting its counts.**",
@@ -1455,11 +1591,13 @@ function assertInvestigateOrdering(docs, m) {
  * an ordering, because each of these steps is only safe once the previous one succeeded.
  */
 function assertPublishOrdering(docs, m) {
-  const { skill, reporting } = docs;
+  const { skill } = docs;
   const { approval, commit, replies, jiraFinish, timeAsk, lessons } = m;
 
-  const validation = skill.indexOf("### Validation and staging, before self-review and approval");
-  const selfReview = skill.indexOf("### Self-review pass, after all fixes and before the summary");
+  // Step 7's two procedures moved to references/fixing.md, so the resident anchors are now
+  // the stop each one carries rather than the section heading each one used to have.
+  const validation = skill.indexOf("**The final approval must cover the exact bytes that will be committed.**");
+  const selfReview = skill.indexOf("**The self-review pass is not optional and not deferrable to after the push.**");
   truthy(
     "workflow: validate, approve, commit, reply, then synchronize Jira",
     validation >= 0 &&
@@ -1468,6 +1606,16 @@ function assertPublishOrdering(docs, m) {
       approval < commit &&
       commit < replies &&
       replies < jiraFinish,
+  );
+
+  // And the ordering follows the content: fixing.md must prescribe validation before the
+  // self-review, since that is now the only place the sequence is spelled out.
+  const fixing = docs.refs.find((r) => r.name === "fixing.md")?.text ?? "";
+  const refValidation = fixing.indexOf("## Definitive validation and staging");
+  const refSelfReview = fixing.indexOf("## The self-review pass");
+  truthy(
+    "workflow: fixing.md still orders validation before the self-review pass",
+    refValidation >= 0 && refSelfReview > refValidation,
   );
 
   // Step 8's template lives in references/summary-gate.md, but the independence rule
@@ -1499,10 +1647,11 @@ function assertPublishOrdering(docs, m) {
   // does follow the answer — and so paid an extra round trip and asked the time question
   // with nothing read behind it.
   const finalReread = skill.indexOf("go out as one batch of two in the same turn as the time question", jiraFinish);
-  // The write itself, now anchored on the read-back rule rather than the call —
-  // the prose moved to references/jira.md but the ordering it enforces did not.
+  // The write itself. Its template and the read-back rule moved to references/jira.md, so the
+  // resident anchor is now the fabrication guard that gates the write. The execution order the
+  // templates follow is asserted against jira.md further down, where that sequence now lives.
   const finalTransition = skill.indexOf(
-    "**The write isn't finished until the server has told you what status it produced**",
+    '**Never write "Jira is now {status}" before the server has said so.**',
     jiraFinish,
   );
   truthy(
@@ -1511,11 +1660,10 @@ function assertPublishOrdering(docs, m) {
   );
 
   const noEarlyTimeAsk = skill.indexOf("**Never ask for time spent at this gate**", approval);
-  const timeQuestion = skill.indexOf("How much time should I log against it?", timeAsk);
   truthy("workflow: time is not requested at the commit gate", noEarlyTimeAsk > approval && noEarlyTimeAsk < commit);
   truthy(
     "workflow: time is requested after publication, and before Step 12",
-    timeAsk > publicationGate && timeAsk < timeQuestion && timeQuestion < lessons,
+    timeAsk > publicationGate && timeAsk < lessons,
   );
 
   // The transition write sits after the time question so both Jira writes share one
@@ -1524,10 +1672,17 @@ function assertPublishOrdering(docs, m) {
     "workflow: the time question precedes the transition write, which follows the re-read",
     finalReread < timeAsk && timeAsk < finalTransition && finalTransition < lessons,
   );
-  const closingLine = skill.indexOf("**Then one closing line, with each result stated separately:**", timeAsk);
+  // Ask, then write, then verify, then report. That sequence used to be readable off SKILL.md's
+  // document order; the four templates now live in references/jira.md, so it is asserted there.
+  // Same ordering, checked against the file that actually prescribes it.
+  const jira11 = docs.refs.find((r) => r.name === "jira.md")?.text ?? "";
+  const jAsk = jira11.indexOf("## The time question's details");
+  const jWrite = jira11.indexOf("## The write batch");
+  const jVerify = jira11.indexOf("## Verifying the transition result");
+  const jReport = jira11.indexOf("## Reporting both results");
   truthy(
     "workflow: every result is reported after the write, not before it",
-    closingLine > finalTransition && closingLine < lessons,
+    jAsk > 0 && jAsk < jWrite && jWrite < jVerify && jVerify < jReport,
   );
 }
 
@@ -1623,6 +1778,10 @@ function assertLaneOrdering(docs, m) {
     "workflow: rule 13 forbids setting the file aside and improvising",
     skill.includes("**Decide what the run is for before planning it, and don't set this file aside.**"),
   );
+  // The table moved to references/conflicts.md — it is step-by-step detail, and a review-lane
+  // run was carrying all twelve rows to learn that its own lane is "as written". What stays
+  // resident is the lane choice itself and the claim that the gates don't change.
+  const laneTableHome = docs.refs.find((r) => r.name === "conflicts.md")?.text ?? "";
   truthy(
     "workflow: the lane table maps every phase, including the ones that drop out",
     [
@@ -1636,7 +1795,13 @@ function assertLaneOrdering(docs, m) {
       "| 9 |",
       "| 10 |",
       "| 11 |",
-    ].every((row) => skill.slice(lane, profile).includes(row)),
+    ].every((row) => laneTableHome.includes(row)),
+  );
+  truthy(
+    "workflow: and SKILL.md still says the gates are identical in both lanes",
+    skill
+      .slice(lane, profile)
+      .includes("**The lane changes the middle of the run. It never changes which gates exist.**"),
   );
   // Same stop, different contents — not a seventh gate, which would contradict the
   // six-gate claim in both docs.
@@ -1652,11 +1817,11 @@ function assertLaneOrdering(docs, m) {
   // and most runs are review-lane. The headings and the two named rules stay, because the
   // disclosure test's finding is that a gate reachable only through a reference goes unread.
   const conflicts = refs.find((r) => r.name === "conflicts.md")?.text ?? "";
-  truthy("lane-split: the plan gate template lives in conflicts.md", conflicts.includes("## The plan gate — the template"));
-  falsy(
-    "lane-split: and not in SKILL.md",
-    skill.includes("**Conflicted files:**") || skill.includes("| # | Region |"),
+  truthy(
+    "lane-split: the plan gate template lives in conflicts.md",
+    conflicts.includes("## The plan gate — the template"),
   );
+  falsy("lane-split: and not in SKILL.md", skill.includes("**Conflicted files:**") || skill.includes("| # | Region |"));
   truthy(
     "lane-split: the resident gate says the template is elsewhere and must be read first",
     skill.includes("**The template is in `references/conflicts.md`, which you must read before rendering this.**"),
@@ -2306,7 +2471,11 @@ function testMrPayloadTriage() {
     wrongBranch.flags.find((f) => f.code === "branch-mismatch")?.message.includes("fix/BIDAYA-2084") &&
       wrongBranch.flags.find((f) => f.code === "branch-mismatch")?.message.includes("fix/BIDAYA-2315"),
   );
-  eq("triage[branch-mismatch]: surfaces the checked-out branch as a fact", wrongBranch.facts.currentBranch, "fix/BIDAYA-2084");
+  eq(
+    "triage[branch-mismatch]: surfaces the checked-out branch as a fact",
+    wrongBranch.facts.currentBranch,
+    "fix/BIDAYA-2084",
+  );
 
   const rightBranch = triageMrPayload({
     mr: { ...base, source_branch: "fix/BIDAYA-2315" },
@@ -2319,12 +2488,24 @@ function testMrPayloadTriage() {
     rightBranch.flags.filter((f) => f.code === "branch-mismatch"),
     [],
   );
-  eq("triage[branch match]: and nothing undetermined about the branch", rightBranch.undetermined.filter((u) => u.startsWith("branch")), []);
+  eq(
+    "triage[branch match]: and nothing undetermined about the branch",
+    rightBranch.undetermined.filter((u) => u.startsWith("branch")),
+    [],
+  );
 
   // Omitted is unknown, and unknown must never read as "already checked out" — that is the
   // exact sentence the failing run produced.
-  for (const [label, value] of [["omitted", undefined], ["empty (detached HEAD)", ""]]) {
-    const unknown = triageMrPayload({ mr: { ...base, source_branch: "x" }, workspaceRemote: remote, currentUser: "jane.doe", currentBranch: value });
+  for (const [label, value] of [
+    ["omitted", undefined],
+    ["empty (detached HEAD)", ""],
+  ]) {
+    const unknown = triageMrPayload({
+      mr: { ...base, source_branch: "x" },
+      workspaceRemote: remote,
+      currentUser: "jane.doe",
+      currentBranch: value,
+    });
     truthy(
       `triage[branch ${label}]: reported undetermined rather than passing`,
       unknown.undetermined.some((u) => u.startsWith("branch:")),
@@ -2806,6 +2987,11 @@ function testServerTransport() {
   eq("transport: reports its name", handshake.result.serverInfo.name, "mr-review-checks");
   const pkg = JSON.parse(readFileSync(join(ROOT, "server", "package.json"), "utf8"));
   eq("transport: serverInfo.version matches package.json", handshake.result.serverInfo.version, pkg.version);
+  // And both track the power's version. The server ships only inside this power, so a second
+  // version number can only ever confuse a bug report — a tester reading "server 1.0.0" out of
+  // a handshake while plugin.json says 1.5.0 has to be told the two are unrelated.
+  const manifestVersion = JSON.parse(readFileSync(join(ROOT, "plugin.json"), "utf8")).version;
+  eq("transport: serverInfo.version tracks plugin.json", handshake.result.serverInfo.version, manifestVersion);
 
   const tools = call([init, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }]).find((m) => m.id === 1).result
     .tools;
@@ -3524,10 +3710,7 @@ function testPreflight() {
 
   // Bug 1. `spawnSync` exposes both streams regardless of exit code; `execFileSync` does not.
   truthy("preflight: captures both streams with spawnSync", src.includes("spawnSync(bin, args"));
-  falsy(
-    "preflight: does not capture command output with execFileSync",
-    /import \{[^}]*execFileSync/.test(src),
-  );
+  falsy("preflight: does not capture command output with execFileSync", /import \{[^}]*execFileSync/.test(src));
   truthy(
     "preflight: records why, so the stderr-only case is not reintroduced",
     src.includes("writing everything to stderr comes back empty"),
@@ -3555,16 +3738,19 @@ function testPreflight() {
   truthy("preflight: --json emits parsable JSON", report !== null);
   if (!report) return;
 
-  eq(
-    "preflight: --json carries the documented top-level keys",
-    Object.keys(report).sort(byCodeUnit),
-    ["checks", "failed", "node", "platform", "redacted", "repo"],
-  );
+  eq("preflight: --json carries the documented top-level keys", Object.keys(report).sort(byCodeUnit), [
+    "checks",
+    "failed",
+    "node",
+    "platform",
+    "redacted",
+    "repo",
+  ]);
   truthy("preflight: reports at least the required checks", report.checks.length >= 8);
-  const STATUSES = ["fail", "info", "ok", "warn"];
+  const STATUSES = new Set(["fail", "info", "ok", "warn"]);
   for (const c of report.checks) {
     truthy(`preflight[${c.name}]: has a group`, typeof c.group === "string" && c.group.length > 0);
-    truthy(`preflight[${c.name}]: has a known status`, STATUSES.includes(c.status));
+    truthy(`preflight[${c.name}]: has a known status`, STATUSES.has(c.status));
     truthy(`preflight[${c.name}]: has a detail string`, typeof c.detail === "string");
   }
   // `failed` drives the exit code, so the two must agree or the exit code is decoration.
@@ -3577,13 +3763,16 @@ function testPreflight() {
 
   // Every check that can fail has to say what the failure costs, or a tester learns
   // nothing they could not have guessed from the name.
-  const named = report.checks.map((c) => c.name);
+  const named = new Set(report.checks.map((c) => c.name));
   for (const required of ["node", "git", "glab", "glab auth", "mr-review-checks", "git-context.mjs", "fetch-mr.mjs"]) {
-    truthy(`preflight: checks ${required}`, named.includes(required));
+    truthy(`preflight: checks ${required}`, named.has(required));
   }
 
   // And it has to be discoverable, or nobody runs it.
-  truthy("preflight: the README tells a tester to run it", readFileSync(join(ROOT, "README.md"), "utf8").includes("node preflight.mjs"));
+  truthy(
+    "preflight: the README tells a tester to run it",
+    readFileSync(join(ROOT, "README.md"), "utf8").includes("node preflight.mjs"),
+  );
 }
 
 /**
@@ -3612,7 +3801,10 @@ function testRedaction() {
   // Invariant 4: three copies are only allowed with a test proving they agree.
   const body = (text) =>
     text
-      .slice(text.indexOf("function scrubSecrets(text, maxLength = 400) {"), text.indexOf("\n  return out;\n}", text.indexOf("function scrubSecrets")))
+      .slice(
+        text.indexOf("function scrubSecrets(text, maxLength = 400) {"),
+        text.indexOf("\n  return out;\n}", text.indexOf("function scrubSecrets")),
+      )
       .replace(/\s+/g, " ")
       .trim();
   for (const f of files) {
@@ -3678,7 +3870,8 @@ function testRedaction() {
   truthy("redact[scrub]: and says it truncated", long.includes("(truncated)"));
 
   // --- Behavioural: --redact must remove identity and keep the diagnostics.
-  const run = (args) => spawnSync(process.execPath, [join(ROOT, "preflight.mjs"), ...args], { encoding: "utf8", timeout: 120_000 });
+  const run = (args) =>
+    spawnSync(process.execPath, [join(ROOT, "preflight.mjs"), ...args], { encoding: "utf8", timeout: 120_000 });
   const plain = run(["--json", "--repo", ROOT]);
   const hidden = run(["--redact", "--json", "--repo", ROOT]);
 
@@ -3686,7 +3879,11 @@ function testRedaction() {
   const hiddenReport = JSON.parse(String(hidden.stdout));
   eq("redact: the plain report is marked unredacted", plainReport.redacted, false);
   eq("redact: the redacted report says so", hiddenReport.redacted, true);
-  eq("redact: --redact does not change any verdict", hiddenReport.checks.map((c) => c.status), plainReport.checks.map((c) => c.status));
+  eq(
+    "redact: --redact does not change any verdict",
+    hiddenReport.checks.map((c) => c.status),
+    plainReport.checks.map((c) => c.status),
+  );
   eq("redact: nor the failed count", hiddenReport.failed, plainReport.failed);
 
   // The repo path is the one value present on every machine this suite runs on.
@@ -3733,7 +3930,16 @@ function testInputRobustness() {
 
   const manyThreads = Array.from({ length: 4000 }, (_, i) => ({
     id: `d${i}`,
-    notes: [{ id: i, system: i % 3 === 0, resolvable: true, resolved: i % 2 === 0, body: "b".repeat(200), author: { username: `u${i % 7}` } }],
+    notes: [
+      {
+        id: i,
+        system: i % 3 === 0,
+        resolvable: true,
+        resolved: i % 2 === 0,
+        body: "b".repeat(200),
+        author: { username: `u${i % 7}` },
+      },
+    ],
   }));
 
   const deepGraphql = {
@@ -3766,14 +3972,35 @@ function testInputRobustness() {
 
     // Diff parsing, which reads whatever git printed.
     ["parseStagedDiff: adversarial headers", () => parseStagedDiff(bigDiff.repeat(400))],
-    ["parseStagedDiff: one enormous line", () => parseStagedDiff(`diff --git a/a b/a\n@@ -1 +1 @@\n+${"x".repeat(200_000)}`)],
-    ["attributeStagedHunks: same, with bases", () => attributeStagedHunks({ diffText: bigDiff.repeat(400), approvedFiles: ["a.ts"] })],
+    [
+      "parseStagedDiff: one enormous line",
+      () => parseStagedDiff(`diff --git a/a b/a\n@@ -1 +1 @@\n+${"x".repeat(200_000)}`),
+    ],
+    [
+      "attributeStagedHunks: same, with bases",
+      () => attributeStagedHunks({ diffText: bigDiff.repeat(400), approvedFiles: ["a.ts"] }),
+    ],
 
     // Payload parsing, which reads whatever the API returned.
-    ["reconcileDiscussionCounts: 4000 threads", () => reconcileDiscussionCounts({ discussions: manyThreads, userNotesCount: 1, currentUser: "u1" })],
+    [
+      "reconcileDiscussionCounts: 4000 threads",
+      () => reconcileDiscussionCounts({ discussions: manyThreads, userNotesCount: 1, currentUser: "u1" }),
+    ],
     ["slimThreadsForReport: 4000 threads", () => slimThreadsForReport(manyThreads)],
     ["normalizeGraphqlMr: 2000 discussions", () => normalizeGraphqlMr(deepGraphql)],
-    ["triageMrPayload: pathological title", () => triageMrPayload({ mr: { iid: 1, state: "opened", user_notes_count: 1, title: `fix(${"UTF-8 ".repeat(5_000)}): x`, web_url: `https://h/${"g/".repeat(5_000)}r/-/merge_requests/1` } })],
+    [
+      "triageMrPayload: pathological title",
+      () =>
+        triageMrPayload({
+          mr: {
+            iid: 1,
+            state: "opened",
+            user_notes_count: 1,
+            title: `fix(${"UTF-8 ".repeat(5_000)}): x`,
+            web_url: `https://h/${"g/".repeat(5_000)}r/-/merge_requests/1`,
+          },
+        }),
+    ],
 
     // String normalisers, which read URLs and titles from the payload.
     ["parseMrTitle: many key candidates", () => parseMrTitle(`fix(${"AB-12 ".repeat(10_000)}): x`)],
