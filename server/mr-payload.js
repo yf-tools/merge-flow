@@ -140,7 +140,7 @@ function pushIssue(list, code, message, detail) {
 }
 
 /** Split out so `triageMrPayload` only runs checks rather than also assembling facts. */
-function buildFacts(mr, workspaceRemote) {
+function buildFacts(mr, workspaceRemote, currentBranch) {
   const { ticketKeys, commitType } = parseMrTitle(mr.title);
   const mrPath = normalizeProjectPath(mr.web_url) ?? null;
   const localPath = normalizeProjectPath(workspaceRemote) ?? null;
@@ -158,6 +158,7 @@ function buildFacts(mr, workspaceRemote) {
     iid: mr.iid ?? null,
     title: typeof mr.title === "string" ? mr.title : null,
     sourceBranch: mr.source_branch ?? null,
+    currentBranch: typeof currentBranch === "string" && currentBranch.trim() ? currentBranch.trim() : null,
     targetBranch: mr.target_branch ?? null,
     state: mr.state ?? null,
     userNotesCount: typeof mr.user_notes_count === "number" ? mr.user_notes_count : null,
@@ -214,6 +215,47 @@ function checkWrongProject(facts, blockers, undetermined) {
       "wrong-project: paths match, but the host could not be read from both sides, so a same-path project on another instance would not have been caught",
     );
   }
+}
+
+/**
+ * Which branch is checked out versus which one the MR is for.
+ *
+ * A flag rather than a blocker: being on the wrong branch at the start is the normal
+ * case, and the run is supposed to check out. What this exists to stop is the run
+ * *claiming* the right branch is already checked out when it isn't.
+ *
+ * Observed on MR !510. `git-context.mjs` returned `branch: "fix/BIDAYA-2084"` and the MR's
+ * source was `fix/BIDAYA-2315`. The report said "**Branch:** `fix/BIDAYA-2315` — already
+ * checked out" and its closing list said "Stay on `fix/BIDAYA-2315`". Both were false and
+ * both contradicted output the run was holding. Because the approved list contained no
+ * checkout, nine grep/read calls then ran against the previous MR's branch before an
+ * unprompted `git branch --show-current` exposed it, costing five re-reads — and the fix
+ * could as easily have been based on the wrong file contents.
+ *
+ * Prose could not fix that: the rule was already there. Comparing two strings the caller
+ * already has is exactly the kind of noticing that belongs in a tool.
+ */
+function checkBranch(facts, flags, undetermined) {
+  const { sourceBranch, currentBranch } = facts;
+
+  if (!sourceBranch) {
+    undetermined.push("branch: the MR payload carried no source_branch to compare");
+    return;
+  }
+  if (!currentBranch) {
+    undetermined.push(
+      "branch: no current branch supplied, so whether the MR's branch is checked out is unknown — do not report it as checked out",
+    );
+    return;
+  }
+  if (currentBranch === sourceBranch) return;
+
+  pushIssue(
+    flags,
+    "branch-mismatch",
+    `Checked out is ${currentBranch}, but this MR is for ${sourceBranch}. Say you will switch; never report it as already checked out.`,
+    { current: currentBranch, source: sourceBranch },
+  );
 }
 
 function checkTerminalState(facts, blockers) {
@@ -297,6 +339,9 @@ function checkDraft(facts, flags) {
  * @param {string} [input.workspaceRemote] `git remote get-url origin` for the open
  *   workspace. Omit it and the wrong-project check reports as undetermined rather
  *   than passing silently.
+ * @param {string} [input.currentBranch] `git branch --show-current` for the open
+ *   workspace, so the report can state whether the MR's branch is actually checked out
+ *   instead of guessing. Omitted means undetermined, never "already checked out".
  * @param {string} [input.currentUser] The username `glab` is authenticated as, for
  *   the ownership check. Omitted means undetermined, not "fine".
  *
@@ -314,7 +359,7 @@ function checkDraft(facts, flags) {
 export function triageMrPayload(input) {
   // `input ?? {}` rather than `= {}` on the parameter — see hunks.js. The runtime
   // check below is the enforcement; this keeps a no-argument call landing on it.
-  const { mr, workspaceRemote, currentUser } = input ?? {};
+  const { mr, workspaceRemote, currentUser, currentBranch } = input ?? {};
 
   if (mr === null || typeof mr !== "object" || Array.isArray(mr)) {
     throw new Error("mr must be the parsed merge request object");
@@ -323,7 +368,7 @@ export function triageMrPayload(input) {
   const blockers = [];
   const flags = [];
   const undetermined = [];
-  const facts = buildFacts(mr, workspaceRemote);
+  const facts = buildFacts(mr, workspaceRemote, currentBranch);
 
   checkWrongProject(facts, blockers, undetermined);
   checkTerminalState(facts, blockers);
@@ -331,6 +376,7 @@ export function triageMrPayload(input) {
   checkZeroComments(facts, blockers, undetermined);
   checkOwnership(facts, currentUser, flags, undetermined);
   checkTicketKey(facts, flags, undetermined);
+  checkBranch(facts, flags, undetermined);
   checkDraft(facts, flags);
 
   return { blockers, flags, undetermined, facts, proceed: blockers.length === 0 };

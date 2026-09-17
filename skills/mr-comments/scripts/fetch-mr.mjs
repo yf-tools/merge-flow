@@ -247,6 +247,7 @@ async function loadChecks() {
  */
 function localContext() {
   let remote;
+  let branch;
   // `gitBin`, never a bare "git" — see resolveBin. A null binary is the same outcome as
   // a failed read: the wrong-project check reports `undetermined` rather than passing.
   if (gitBin) {
@@ -258,6 +259,14 @@ function localContext() {
     } catch {
       // Not a git repo, or no `origin`.
     }
+    try {
+      // Gathered here for the same reason as the remote: the branch comparison is the one
+      // the report got wrong on MR !510, claiming the MR's branch was "already checked
+      // out" while this value said otherwise. Supplying it makes the tool decide.
+      branch = execFileSync(gitBin, ["branch", "--show-current"], { encoding: "utf8" }).trim() || undefined;
+    } catch {
+      // Detached HEAD, or not a git repo.
+    }
   }
 
   // `spawnSync`, because `glab auth status` prints its "Logged in to X as Y" line to
@@ -268,7 +277,7 @@ function localContext() {
   });
   const user = /\bas\s+([A-Za-z0-9._-]+)/.exec(`${auth.stdout ?? ""}\n${auth.stderr ?? ""}`)?.[1];
 
-  return { remote, user };
+  return { remote, user, branch };
 }
 
 function glab(args) {
@@ -327,7 +336,12 @@ function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx }) {
   proc.stdout.write(
     JSON.stringify({
       mode: "triaged",
-      triage: checks.triageMrPayload({ mr, workspaceRemote: ctx.remote, currentUser: ctx.user }),
+      triage: checks.triageMrPayload({
+        mr,
+        workspaceRemote: ctx.remote,
+        currentUser: ctx.user,
+        currentBranch: ctx.branch,
+      }),
       counts: counts,
       mr,
       discussions: slim.threads,

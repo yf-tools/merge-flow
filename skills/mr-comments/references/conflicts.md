@@ -1,6 +1,6 @@
 # Conflict resolution — mechanics
 
-Read this once you're in the conflict-first lane (SKILL.md Step 0b) and before filling in the plan gate. SKILL.md keeps the lane decision, the plan gate template, and the rule that nothing gets merged before the gate closes. This file has the parts you only need once you're actually doing it.
+Read this as soon as you're in the conflict-first lane (SKILL.md Step 0b) and **before you render the plan gate** — the gate's template is in this file, not in SKILL.md. SKILL.md keeps the lane decision, the fact that the gate replaces Step 5 and is a hard stop, and the pointer here. Everything you need in order to actually fill it in is below.
 
 ## The two online paths, in full
 
@@ -37,6 +37,29 @@ So the honest set of online paths is: **rebase via API** when it isn't really a 
 ### If the user takes the online path
 
 Steps 7–9 drop out and the verification doesn't. Nothing local happens — no checkout, no merge, no commit, no push. Wait for them to say they've done it, then re-read the MR payload exactly as Step 9's post-push check does, and report `has_conflicts` from that read. `checking`/`unchecked` is still pending, not cleared. Two things to say once and not repeat: their resolution commit is on the source branch and will show up in the MR diff, and if review comments are still open, ask whether to carry on into the review lane now that the code has moved.
+
+## The plan gate — the template
+
+Three decisions live in a conflict resolution, and **all three are the user's**: the merge strategy, which side wins per region, and whether anything here exceeds a mechanical pick. Present them together and stop.
+
+```text
+**MR !{iid} — conflict against `{target_branch}`**
+
+**Strategy:** {merge `origin/{target}` into `{source}` locally / rebase `{source}` onto `origin/{target}` locally} — this repo's last {n} merges into feature branches look like {evidence from `git log --oneline --merges`}. {One line on the tradeoff: a merge is non-destructive and needs no force-push; a rebase keeps history linear but rewrites pushed commits.}
+{**Or online:** all {n} conflicting file(s) meet GitLab's UI criteria, so you can resolve this yourself in the browser — interactive mode, the inline editor, or Resolve with GitLab Duo — without me touching your working tree. — include this line only when every file qualifies; omit the row entirely otherwise}
+
+**Conflicted files:** {n} of {m} that differ on both sides — {list}
+
+| # | Region | Their side (`{target}`) | Your side (`{source}`) | Proposed |
+|---|---|---|---|---|
+| 1 | `{file}:{line}` | {one line} | {one line} | {which, and why in ≤10 words} |
+
+**Beyond a mechanical pick:** {each item — a rewrite, a deleted file, a moved member, a dropped refactor — one line each} — or `none`
+
+{Open review comments bearing on any of this, one line each, or omit}
+
+Proceed with this plan, or resolve it online yourself? Say which rows to change if any are wrong.
+```
 
 ## Why the plan gate's rows are shaped the way they are
 

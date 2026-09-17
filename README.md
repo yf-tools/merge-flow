@@ -102,7 +102,8 @@ What it will and won't do on its own:
 - Reconciles exactly one Jira hostname + key across the MR title, source branch, description, and linked issues before checkout; conflicting keys, multiple Jira hosts, absent identity, or a mismatched issue summary stops for correction
 - Reads the Jira ticket before code work. `To Do`/review states require an explicitly approved move to the project's exact active-development status; blocked, unknown, and terminal statuses stop for a decision
 - Re-reads Jira after a successful push and all approved replies/resolutions; only then returns it to the exact review status approved in the final summary, and never claims a status it hasn't read back
-- Asks how much time to log **last** — after the push, the replies and the resolutions — so you're estimating finished work, not work in progress. It's the last question, not the last write: the review transition waits behind it so the status change and the worklog go out in one turn, and the resulting status is reported once, after it's been read back. Commit approval, Jira approval, and the worklog stay independent
+- Leaves one comment on the ticket saying what was addressed, approved in the same breath as the status change rather than at a gate of its own. It claims only the threads it actually replied to and resolved, carries the MR link, and is written like a person wrote it — Jira comments are flat, so it doesn't pretend to thread under a reviewer's comment
+- Asks how much time to log **last** — after the push, the replies and the resolutions — so you're estimating finished work, not work in progress. It's the last question, not the last write: the review transition waits behind it so the status change, a short comment on the ticket naming what was addressed, and the worklog all go out in one turn, and the resulting status is reported once, after it's been read back. Commit approval, Jira approval, and the worklog stay independent
 - Never checks out a branch, moves the Jira ticket, or opens a referenced file before the report has been answered — the report ends its turn, so you see it before the slow part starts
 - Checks the two cheap ways out of a conflict before proposing a local merge: a branch that's merely behind gets rebased through GitLab's API in one call and never touches your working tree, and when every conflicting file meets GitLab's own UI criteria you're offered the browser path (interactive mode, inline editor, or Resolve with GitLab Duo) instead of having a local merge decided for you. It won't pretend to drive either one — there's no REST endpoint for the web resolver, and it says so rather than improvising with the Commits API
 - Never edits code before showing you the report and getting a go-ahead, and comes back rather than improvising when the code turns out not to match what the report promised
@@ -235,7 +236,8 @@ tester's editor would try to lint with a plugin they haven't installed.
   command name. To pin a binary explicitly, set `GIT_PATH` or `GLAB_PATH` to its
   absolute path and the search is skipped.
 - An Atlassian/Jira MCP server is recommended for automatic ticket verification,
-  active-status transition, return-to-review transition, and optional worklog.
+  active-status transition, return-to-review transition, the closing comment, and
+  optional worklog.
   Without it, the workflow remains stopped until the user manually supplies the
   exact Jira hostname, key, summary, and current status and confirms any required
   transition. There is no fail-open synchronization waiver.

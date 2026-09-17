@@ -22,7 +22,7 @@ This is the run's **only** pre-work output and its only pre-work gate. Everythin
 {countLine, verbatim from the counts tool} · {X} unresolved / {Y} resolved on GitLab
 
 - **State:** {state}, {mergeable / cannot merge — from detailed_merge_status} · **Target:** `{target_branch}`
-- **Ticket:** `{TICKET-KEY}` — **{exact current status}** · **Branch:** `{source_branch}` {— already checked out / — I'd switch from `{current branch}`}
+- **Ticket:** `{TICKET-KEY}` — **{exact current status}** · **Branch:** `{source_branch}` {— already checked out / — I'd switch from `{current branch}` / — I can't tell what's checked out}
 - **Blockers:** {one line per blocker message} — or `none`
 - **Flags:** {one line per non-blocking flag} — omit the row entirely when there are none
 
@@ -62,6 +62,8 @@ Reviewer ({author}): "{trimmed comment}"
 Go ahead? {Say so if you'd rather leave Jira in **{current status}**, or if any classification above is wrong.}
 ```
 
+**The `Branch` row and closing item 1 come from `triage.flags`, never from your own comparison.** A `branch-mismatch` flag means "I'd switch from `{current}`"; its absence with nothing in `undetermined` means "already checked out"; `branch` in `undetermined` means you cannot tell, so say that. **"Already checked out" is an invariant-1 claim that has been fabricated against evidence the run held**, costing nine reads on the wrong branch because a closing list with no checkout in it was executed faithfully.
+
 **The `Ticket` row carries the status even when nothing needs moving.** It is one word, the user is deciding whether to hand over the next twenty minutes, and by this point you have actually read it. What stays out is a _separate_ mention — no "already In Progress ✓" status line, no follow-up sentence about it.
 
 **Use the tool's `countLine` verbatim rather than typing that shape.** The `reconciles ✓` ending is only one of three it produces; the others are `MISMATCH vs user_notes_count {n}` and `not reconciled — no user_notes_count supplied`. Re-typing it from an example hardcodes the good outcome, which is exactly the case where the line carries no information — the two bad endings are the ones the user needs to see.
@@ -90,15 +92,15 @@ That is a real offer rather than a formality: a thread resolved before a rebase 
 
 These and no others. Emoji earn their place by sorting a long list at a glance; every additional one makes the list harder to scan, which defeats the reason for having any.
 
-| Marker | Means                                                                                                                                          |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| ✅     | Fix, an edit this run will make                                                                                                                |
-| 🔵     | Nitpick, a trivial edit this run will make                                                                                                     |
-| 💬     | Question, waiting on the user                                                                                                                  |
-| ⚠️     | Disagree, pushing back                                                                                                                         |
-| ✔️     | a fix that turned out to be in the code already. **A Step 6b finding and a Step 10 reply, never a Step 5 item** — it takes a file read to know |
-| 🔴 🟡  | the reviewer's own severity, echoed as they framed it                                                                                          |
-| 🛑     | a hard stop                                                                                                                                    |
+| Marker | Means |
+| --- | --- |
+| ✅ | Fix, an edit this run will make |
+| 🔵 | Nitpick, a trivial edit this run will make |
+| 💬 | Question, waiting on the user |
+| ⚠️ | Disagree, pushing back |
+| ✔️ | a fix already in the code. **A Step 6b finding or Step 10 reply, never a Step 5 item** — it takes a file read to know |
+| 🔴 🟡 | the reviewer's own severity, echoed as they framed it |
+| 🛑 | a hard stop |
 
 Never decorate a heading that already reads clearly, and never put a marker on the orientation rows, the count lines, the closing list, or the closing question. Those are read in sequence rather than scanned, so a marker there is noise.
 
@@ -116,7 +118,7 @@ Never decorate a heading that already reads clearly, and never put a marker on t
 
 **Resolve state and `{needsYou}` are not quite the same split, and the report should not imply they are.** `{needsYou}` is normally every unresolved thread plus every general MR comment — but a resolved thread holding an unanswered question gets promoted into the items, and then the two splits differ by one. Line 1 is your classification; line 2 is GitLab's bookkeeping. When they disagree, the item's own entry says why.
 
-**`threadsTotal` does not appear in this header at all**, and the difference between it and `feedbackThreads` is not worth a parenthetical either. Nobody needs to be told how many "requested review from @x" entries GitLab returned; mentioning them only invites the reader to check arithmetic against a number that isn't in the report.
+**`threadsTotal` does not appear in this header at all**, not even as a parenthetical: naming how many "requested review from @x" entries GitLab returned only invites the reader to check arithmetic against a number the report doesn't carry.
 
 Never check either thread count against `{expectedNotes}` — that counts notes, not threads. The `user_notes_count` tick belongs on the second line only, and only when `reconciles` was actually `true`. Verify all of this before sending: a header whose own numbers don't add up destroys confidence in every classification under it.
 
@@ -167,7 +169,7 @@ The third option matters and is easy to forget: sometimes the right response to 
 
 ## Step 8 — the final summary
 
-Before presenting the gate, re-read the verified Jira ticket from Step 3. With Atlassian tools, call `getTransitionsForJiraIssue`; in manual mode, ask the user to confirm the exact currently reachable review target. Identify the review status by exact name (`To Review`, `In Review`, `Review`, or the project's verified equivalent), never by status category. If no direct review transition exists, say that now and render the explicit leave-unchanged/manual form rather than inventing or promising a transition Step 11 cannot perform.
+Before presenting the gate, call `getTransitionsForJiraIssue` — **that one call, not a re-read as well**, because Step 6 already confirmed the status and Step 11 re-reads before acting. In manual mode, ask the user to confirm the exact currently reachable review target. Identify the review status by exact name (`To Review`, `In Review`, `Review`, or the project's verified equivalent), never by status category. If no direct review transition exists, say that now and render the explicit leave-unchanged/manual form rather than inventing or promising a transition Step 11 cannot perform.
 
 ### Preconditions — do not render this gate without them
 
@@ -218,11 +220,11 @@ This summary is the document the user approves. Every number in it must come fro
 **Jira after replies**
 - Ticket: `{TICKET-KEY}` — currently **{current status}**
 - If a direct review transition exists:
-  - Proposed: transition to **{exact review status}** after the push and approved thread replies/resolutions
-  - Approve that Jira transition? (yes / leave unchanged)
+  - Proposed: transition to **{exact review status}**, and one short comment on the ticket naming what was addressed, both after the push and the approved replies/resolutions
+  - Approve those Jira updates? (yes / leave Jira alone)
 - If no direct review transition exists:
-  - Proposed: leave Jira unchanged in **{current status}**; no direct review transition is available
-  - Confirm leave unchanged/manual? (yes / stop and inspect the available transitions)
+  - Proposed: leave the status unchanged in **{current status}** — no direct review transition is available — and post one short comment naming what was addressed
+  - Confirm leave unchanged/manual? (yes / no Jira writes at all / stop and inspect the available transitions)
 
 ---
 
@@ -234,6 +236,8 @@ Ready to commit and push? (yes / let me review first / adjust message)
 Omit any section that's empty (no skipped items → drop that heading entirely, don't write "none") — **except Staged, Self-review, and Jira after replies, which always appear**. Staged proves you read the real diff; Self-review proves review happened; Jira proves ticket status was checked and makes the final shared-state decision explicit. Dropping any of the three makes the gate unfalsifiable — a summary that omits Self-review reads exactly like one where the pass came back clean.
 
 **The Jira block is a question, not a status line.** Render one of the two branches verbatim, including its `?`. Writing _"currently TO REVIEW — no transition needed"_ and moving on is not this section; it is the section replaced by a conclusion. If Step 3 found no reachable active-development transition and the user chose to leave the ticket alone, say that and name it as their recorded choice — _"leaving Jira in **{status}** per your call at the start of the run; confirm that still holds?"_ — so Step 11 inherits a decision with a person attached to it.
+
+**The comment rides with the transition rather than getting its own gate.** Approve and you get both writes; decline and you get neither.
 
 **Jira approval is independent from commit approval and time logging.** If the reply doesn't clearly cover the proposed review transition, ask before Step 9 rather than inferring it. "Ready to commit" authorizes only commit and push. Retain the explicit Jira answer for Step 11 — do not ask again there unless the ticket's status or reachable transitions changed.
 

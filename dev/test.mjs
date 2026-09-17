@@ -613,7 +613,7 @@ function sectionOffsets(docs) {
     commit: at("## Step 9 — Commit and Push"),
     replies: at("## Step 10 — Reply Inline and Resolve Each Thread"),
     jiraFinish,
-    timeAsk: at("### Ask for time spent, then make both Jira writes in one turn", jiraFinish),
+    timeAsk: at("### Ask for time spent, then make every Jira write in one turn", jiraFinish),
     lessons: at("## Step 12 — Optional Follow-Up: Capture Recurring Lessons"),
   };
 }
@@ -633,6 +633,118 @@ function testWorkflowPolicyContracts() {
   assertReportTemplateShape(docs);
   assertBatchPlanShape(docs, marks);
   assertPortableCommands(docs);
+  assertJiraCommentWiring(docs, marks);
+}
+
+/**
+ * The closing Jira comment, which had to be added without adding a gate.
+ *
+ * It rides on Step 8's existing Jira approval rather than asking again, so the assertions
+ * here are mostly about *where* it is authorized and *what it may claim*. The failure this
+ * guards against is the comment drifting into its own question (turning one decision into a
+ * matrix) or into a claim about the report's intentions rather than what Step 10 actually
+ * observed on the remote — a report item that became a Step 6b "already handled" is not a
+ * fix, and a skipped thread is not a resolved one.
+ */
+function assertJiraCommentWiring(docs, m) {
+  const { skill, reporting, refs } = docs;
+  const { jiraFinish, timeAsk, lessons } = m;
+  const jira = refs.find((r) => r.name === "jira.md")?.text ?? "";
+
+  // Authorized at Step 8, with the transition, as one question with two answers.
+  truthy(
+    "jira-comment: Step 8's block proposes the comment alongside the transition",
+    reporting.includes("and one short comment on the ticket naming what was addressed"),
+  );
+  truthy(
+    "jira-comment: and asks once, covering both",
+    reporting.includes("Approve those Jira updates? (yes / leave Jira alone)"),
+  );
+  truthy(
+    "jira-comment: the no-transition branch still offers the comment",
+    reporting.includes("and post one short comment naming what was addressed"),
+  );
+  truthy(
+    "jira-comment: reporting.md records why it shares the transition's gate",
+    reporting.includes("**The comment rides with the transition rather than getting its own gate.**"),
+  );
+
+  // Resident: the write batch names it, and points at the reference for the content rules.
+  const batch = skill.slice(timeAsk, lessons);
+  for (const call of ["transitionJiraIssue", "addCommentToJiraIssue", "addWorklogToJiraIssue"]) {
+    truthy(`jira-comment: Step 11's batch issues ${call}`, batch.includes(call));
+  }
+  truthy(
+    "jira-comment: the resident file says Step 8 authorizes it, not the time question",
+    batch.includes("**The comment is authorized by Step 8's Jira block, not by this question**"),
+  );
+  // Ordering: it is a write, so it must sit after the time question like the other two.
+  truthy(
+    "jira-comment: the comment write follows the time question",
+    skill.indexOf("addCommentToJiraIssue", jiraFinish) > timeAsk,
+  );
+
+  // Evidence rule: the ledger, never the report.
+  truthy(
+    "jira-comment: jira.md sources it from Step 10's ledger",
+    jira.includes("Step 10's ledger already holds") || jira.includes("what Step 10's ledger observed remotely"),
+  );
+  truthy(
+    "jira-comment: and says a skipped thread is not a resolved one",
+    jira.includes("a thread you skipped is not a thread you resolved"),
+  );
+  // The two things that must never reach a remote surface.
+  truthy("jira-comment: --no-verify stays out of it", jira.includes("`--no-verify` choice"));
+  truthy(
+    "jira-comment: prose rules apply because a colleague reads it",
+    jira.includes("It is remote text a colleague reads"),
+  );
+  // Flatness, so nobody promises threading the API cannot do.
+  truthy(
+    "jira-comment: the API's lack of threading is stated, not implied",
+    jira.includes("no parent-comment field"),
+  );
+
+  // Independence: a failed comment must not hold back the transition or the worklog.
+  truthy(
+    "jira-comment: a failure is reported without blocking the other writes",
+    jira.includes("**A failed comment is reported, not retried silently, and it holds nothing back.**"),
+  );
+
+  // The Step 11 read batch shares the time question's turn, and Step 8 no longer re-reads.
+  // Both are latency findings from a live run: the same two Jira reads were prescribed at
+  // Step 3, Step 8 and Step 11 — six calls for two facts — and the Step 11 pair landed
+  // *after* the answer, costing a round trip and a question with no figures behind it.
+  truthy(
+    "jira-reads: Step 11 batches the two reads into the time question's turn",
+    skill.includes("go out as one batch of two in the same turn as the time question, before you emit it — never after the answer"),
+  );
+  truthy(
+    "jira-reads: and forbids narrating what they found",
+    skill.includes("**Say nothing between the reads and the question**"),
+  );
+  truthy(
+    "jira-reads: Step 8 calls transitions only, not a second re-read",
+    reporting.includes("**that one call, not a re-read as well**"),
+  );
+  falsy(
+    "jira-reads: the phrasing a run misread as 'after they reply' is gone",
+    skill.includes("Re-read the ticket immediately before any automated write."),
+  );
+  truthy(
+    "jira-reads: jira.md records the run and why Step 8 doesn't re-read",
+    jira.includes("**This is also the whole reason Step 8 does not re-read.**"),
+  );
+
+  // Stale enumerations. Every place that used to say "two writes" or "both" now covers three.
+  for (const stale of [
+    "**Ask for the time before the two Jira writes, then make both in one turn.**",
+    "issue both writes in one turn",
+    "with both results stated separately",
+    "before the two Jira writes",
+  ]) {
+    falsy(`jira-comment: no stale two-write wording — ${stale.slice(0, 44)}`, skill.includes(stale));
+  }
 }
 
 /**
@@ -746,7 +858,7 @@ function assertCorpusPhrases(corpus) {
     "a failed push, reply or resolution **leaves Jira in active development**",
     "The time question below still runs; time was spent either way.",
     "Do not ask for time spent at this gate",
-    "### Ask for time spent, then make both Jira writes in one turn",
+    "### Ask for time spent, then make every Jira write in one turn",
     "**This is the final question in the workflow**",
     // The time question moved ahead of the two Jira writes so they share one turn
     // (observed: three turns for two writes and a question). Asking first also makes
@@ -756,8 +868,16 @@ function assertCorpusPhrases(corpus) {
     "**Name the target as pending, never as done.**",
     "**Then stop and go ask about time.**",
     "**This ordering is also why there's nothing to announce here.**",
-    "**issue both writes in one turn:**",
-    "**Then one closing line, with both results stated separately:**",
+    "**issue every Jira write in one turn:**",
+    "**Then one closing line, with each result stated separately:**",
+    // The closing Jira comment. Approved at Step 8 with the transition rather than at its
+    // own gate, written from Step 10's ledger rather than the report's intentions, and
+    // flat because Jira has no parent-comment field.
+    "## The closing comment",
+    "**Jira comments are flat.**",
+    "**What it may claim is exactly what Step 10's ledger observed remotely.**",
+    "addCommentToJiraIssue",
+    "**When the comment is the only Jira write**",
     "How much time should I log against it?",
     "**Never infer the duration**",
     "Ask even when earlier stages failed",
@@ -1005,11 +1125,13 @@ function assertCorpusPhrases(corpus) {
     // docs.gitlab.com): the rebase endpoint fixes behind-but-clean in one call, and
     // the UI resolver isn't reachable from /api/v4/ at all — offer it, never attempt it.
     "### Before planning a local merge: two cheaper paths",
-    "**1. Is it actually a conflict, or is the branch just behind?**",
+    // Formatting-agnostic: these two are headings in conflicts.md now, and were bold in
+    // SKILL.md before the conflict-lane detail moved out of the resident file.
+    "1. Is it actually a conflict, or is the branch just behind?",
     "merge_requests/{iid}/rebase",
     '"merge_error": "Rebase failed. Please rebase locally"',
     "**Its documented prerequisite is that no conflicts exist**",
-    "**2. Could GitLab resolve it online instead?**",
+    "2. Could GitLab resolve it online instead?",
     "under 200 KB once conflict markers are added",
     "free of pre-existing conflict markers",
     "present at the same path on both branches",
@@ -1298,7 +1420,11 @@ function assertPublishOrdering(docs, m) {
   );
 
   const publicationGate = skill.indexOf("**Publication success is a hard precondition.**", jiraFinish);
-  const finalReread = skill.indexOf("**Re-read the ticket immediately before any automated write.**", jiraFinish);
+  // Anchored on the batch instruction rather than the old "immediately before any
+  // automated write" phrasing, which a real run read as "after they reply" — the write
+  // does follow the answer — and so paid an extra round trip and asked the time question
+  // with nothing read behind it.
+  const finalReread = skill.indexOf("go out as one batch of two in the same turn as the time question", jiraFinish);
   // The write itself, now anchored on the read-back rule rather than the call —
   // the prose moved to references/jira.md but the ordering it enforces did not.
   const finalTransition = skill.indexOf(
@@ -1324,9 +1450,9 @@ function assertPublishOrdering(docs, m) {
     "workflow: the time question precedes the transition write, which follows the re-read",
     finalReread < timeAsk && timeAsk < finalTransition && finalTransition < lessons,
   );
-  const closingLine = skill.indexOf("**Then one closing line, with both results stated separately:**", timeAsk);
+  const closingLine = skill.indexOf("**Then one closing line, with each result stated separately:**", timeAsk);
   truthy(
-    "workflow: both results are reported after the write, not before it",
+    "workflow: every result is reported after the write, not before it",
     closingLine > finalTransition && closingLine < lessons,
   );
 }
@@ -1390,7 +1516,7 @@ function assertReportSectionOrdering(docs, m) {
  * lane, and must be reachable by a skim of the file's top — all the MR !508 run did.
  */
 function assertLaneOrdering(docs, m) {
-  const { skill, power, readme, powerFlat } = docs;
+  const { skill, power, readme, powerFlat, refs } = docs;
   const { parseUrl, lane, profile } = m;
 
   const cheaper = skill.indexOf("### Before planning a local merge: two cheaper paths");
@@ -1446,6 +1572,39 @@ function assertLaneOrdering(docs, m) {
       "In the conflict-first lane rule 3's report is the resolution plan gate rather than the triage report",
     ),
   );
+  // The conflict lane's *detail* lives in conflicts.md; only its gate declaration is
+  // resident. This is the one measured case where relocating resident prose saves a run
+  // something rather than moving the cost later: a review-lane run never enters this lane,
+  // and most runs are review-lane. The headings and the two named rules stay, because the
+  // disclosure test's finding is that a gate reachable only through a reference goes unread.
+  const conflicts = refs.find((r) => r.name === "conflicts.md")?.text ?? "";
+  truthy("lane-split: the plan gate template lives in conflicts.md", conflicts.includes("## The plan gate — the template"));
+  falsy(
+    "lane-split: and not in SKILL.md",
+    skill.includes("**Conflicted files:**") || skill.includes("| # | Region |"),
+  );
+  truthy(
+    "lane-split: the resident gate says the template is elsewhere and must be read first",
+    skill.includes("**The template is in `references/conflicts.md`, which you must read before rendering this.**"),
+  );
+  truthy(
+    "lane-split: the resident gate still declares itself a hard stop",
+    skill.includes("it is the same hard stop: present it, end the turn, wait"),
+  );
+  // These three were duplicated verbatim in both files before the move.
+  for (const rule of [
+    '**The "Beyond a mechanical pick" row is the one that matters, and it is not optional.**',
+    "**Never start the merge or rebase before this gate closes.**",
+    "**A dirty tree or a branch switch is a bigger deal in this lane, not a smaller one.**",
+  ]) {
+    truthy(`lane-split: conflicts.md keeps — ${rule.slice(0, 46)}`, conflicts.includes(rule));
+    falsy(`lane-split: SKILL.md no longer duplicates it`, skill.includes(rule));
+  }
+  truthy(
+    "lane-split: conflicts.md says the template is its own, not SKILL.md's",
+    conflicts.includes("the gate's template is in this file, not in SKILL.md"),
+  );
+
   truthy("power: documents the two lanes and one gate set", power.includes("## Two kinds of work, one set of gates"));
   truthy("README: documents the second job", readme.includes("**It handles two jobs, not one.**"));
   truthy(
@@ -1569,8 +1728,10 @@ function assertLayoutOrdering(docs, m) {
     outputDiscipline >= 0 && outputDiscipline < formatting && formatting < parseUrl,
   );
 
-  // Step 11's re-read must be stated before the time-log ask that depends on it.
-  const rereadCoversWorklog = skill.indexOf("This applies even when no transition is needed");
+  // Step 11's re-read must be stated before the time-log ask that depends on it, and it
+  // must cover the worklog-only path — "no transition to make" is the shape in which the
+  // whole batch has been skipped.
+  const rereadCoversWorklog = skill.indexOf("batch runs even when no transition is needed");
   truthy(
     "workflow: the worklog-path re-read is stated before the time-log question",
     rereadCoversWorklog > jiraFinish && rereadCoversWorklog < timeAsk,
@@ -1732,6 +1893,7 @@ function testLocalTriageParity() {
     mr,
     workspaceRemote: "git@git.example.net:a/b/repo.git",
     currentUser: "jane.doe",
+    currentBranch: mr.source_branch,
   });
   const counts = reconcileDiscussionCounts({
     discussions,
@@ -1740,7 +1902,7 @@ function testLocalTriageParity() {
   });
 
   eq("local triage: composes a real verdict", triage.proceed, true);
-  eq("local triage: nothing undetermined once the script supplies both inputs", triage.undetermined, []);
+  eq("local triage: nothing undetermined once the script supplies all three local inputs", triage.undetermined, []);
   eq("local triage: reconciles against user_notes_count", counts.reconciles, true);
   eq("local triage: splits resolved from unresolved", [counts.unresolvedThreads, counts.resolvedThreads], [1, 1]);
   eq("local triage: gids are stripped for Step 10's replies", discussions[0].id, "abc");
@@ -1982,7 +2144,14 @@ function testMrPayloadTriage() {
   };
   const remote = "git@git.example.net:retail/bidaya/frontend/bidaya.git";
 
-  const clean = triageMrPayload({ mr: base, workspaceRemote: remote, currentUser: "jane.doe" });
+  // `currentBranch` matches `source_branch` here: this fixture models a *complete* call, and
+  // every input a check needs has to be present or `undetermined` is correctly non-empty.
+  const clean = triageMrPayload({
+    mr: base,
+    workspaceRemote: remote,
+    currentUser: "jane.doe",
+    currentBranch: base.source_branch,
+  });
   eq("triage[clean MR]: proceeds", clean.proceed, true);
   eq("triage[clean MR]: no blockers", clean.blockers, []);
   eq("triage[clean MR]: nothing undetermined", clean.undetermined, []);
@@ -2040,6 +2209,61 @@ function testMrPayloadTriage() {
     "triage[zero comments]: blocks",
     zero.blockers.some((b) => b.code === "zero-comments"),
   );
+
+  // --- Branch comparison. Observed on MR !510: the run held `git-context.mjs` output
+  // reading `branch: "fix/BIDAYA-2084"` against a source branch of `fix/BIDAYA-2315`, then
+  // wrote "already checked out" in the report and "Stay on {source}" in the closing list.
+  // The approved list therefore had no checkout in it, and nine grep/read calls ran against
+  // the previous MR's branch before an unprompted `git branch --show-current` caught it.
+  // A prose rule already covered this; comparing two strings the caller holds is a tool's job.
+  const wrongBranch = triageMrPayload({
+    mr: { ...base, source_branch: "fix/BIDAYA-2315" },
+    workspaceRemote: remote,
+    currentUser: "jane.doe",
+    currentBranch: "fix/BIDAYA-2084",
+  });
+  truthy(
+    "triage[branch-mismatch]: flags a different checked-out branch",
+    wrongBranch.flags.some((f) => f.code === "branch-mismatch"),
+  );
+  eq("triage[branch-mismatch]: is a flag, not a blocker — checking out is the normal fix", wrongBranch.proceed, true);
+  truthy(
+    "triage[branch-mismatch]: names both branches so the report can render the switch",
+    wrongBranch.flags.find((f) => f.code === "branch-mismatch")?.message.includes("fix/BIDAYA-2084") &&
+      wrongBranch.flags.find((f) => f.code === "branch-mismatch")?.message.includes("fix/BIDAYA-2315"),
+  );
+  eq("triage[branch-mismatch]: surfaces the checked-out branch as a fact", wrongBranch.facts.currentBranch, "fix/BIDAYA-2084");
+
+  const rightBranch = triageMrPayload({
+    mr: { ...base, source_branch: "fix/BIDAYA-2315" },
+    workspaceRemote: remote,
+    currentUser: "jane.doe",
+    currentBranch: "fix/BIDAYA-2315",
+  });
+  eq(
+    "triage[branch match]: raises no flag",
+    rightBranch.flags.filter((f) => f.code === "branch-mismatch"),
+    [],
+  );
+  eq("triage[branch match]: and nothing undetermined about the branch", rightBranch.undetermined.filter((u) => u.startsWith("branch")), []);
+
+  // Omitted is unknown, and unknown must never read as "already checked out" — that is the
+  // exact sentence the failing run produced.
+  for (const [label, value] of [["omitted", undefined], ["empty (detached HEAD)", ""]]) {
+    const unknown = triageMrPayload({ mr: { ...base, source_branch: "x" }, workspaceRemote: remote, currentUser: "jane.doe", currentBranch: value });
+    truthy(
+      `triage[branch ${label}]: reported undetermined rather than passing`,
+      unknown.undetermined.some((u) => u.startsWith("branch:")),
+    );
+    falsy(
+      `triage[branch ${label}]: raises no false mismatch flag`,
+      unknown.flags.some((f) => f.code === "branch-mismatch"),
+    );
+    truthy(
+      `triage[branch ${label}]: says explicitly it is not "checked out"`,
+      unknown.undetermined.find((u) => u.startsWith("branch:"))?.includes("do not report it as checked out"),
+    );
+  }
 
   const notYours = triageMrPayload({ mr: base, workspaceRemote: remote, currentUser: "someone.else" });
   eq("triage[not yours]: still proceeds", notYours.proceed, true);

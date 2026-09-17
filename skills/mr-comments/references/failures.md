@@ -116,6 +116,24 @@ Both questions were worth one line in the report, not a delay to it.
 
 **`reconcile_discussion_counts` called three times** — once missing `resolvable`, once correctly, once with `user_notes_count: 0` alone after the schema had already rejected it.
 
+## MR !510 — the report said the branch was already checked out, and it wasn't
+
+The run held `git-context.mjs` output reading `"branch": "fix/BIDAYA-2084"`. The MR's source branch was `fix/BIDAYA-2315`. The report it then wrote said:
+
+> **Branch:** `fix/BIDAYA-2315` — already checked out
+
+and its closing list opened with:
+
+> 1. Stay on `fix/BIDAYA-2315` — already checked out
+
+Both false, both contradicted by a tool result in the same turn, and both inside the one message the user approves.
+
+The damage came from the list being executed faithfully. With no checkout in it, batch 3 ran the profile reads and the Jira transition and stopped. **Nine grep and read calls (123m00–123m33) then ran against the previous MR's branch.** At 123m47 an unprompted `git branch --show-current` exposed it; the checkout landed at 123m56 and five files were re-read. Roughly 50 seconds and ten calls, and the conclusion drawn at 124m21 could as easily have rested on the wrong file contents.
+
+**Why prose was not the fix.** The rule was already written, in the template's own third variant. The run had both strings and asserted the opposite of what they said. So the comparison moved into `triage_mr_payload`, which now takes `current_branch` and returns a `branch-mismatch` flag — and reports `undetermined` when the branch is unknown, because unknown must never render as "already checked out".
+
+**Same run, second finding.** The lint command went out as `npx nx lint business-services --max-warnings=0`, failed, and was corrected to `pnpm run lint:business-services`. `package.json` had been read 100 seconds earlier in the same turn, so rung 1 of the lint ladder — the project-scoped script — was available and skipped in favour of rung 2 with a flag appended.
+
 **`getJiraIssue` and `getTransitionsForJiraIssue` nine seconds apart**, when the transition list is a property of the issue and never had to wait.
 
 **Two builds started "as diagnostics"** while the pre-push hook was known to build all six projects, then polled for ~2 minutes before the summary. One was `--c=development`, which doesn't change the arithmetic.

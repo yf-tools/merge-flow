@@ -48,7 +48,8 @@ final summary with separate commit and Jira-review approvals, commits and pushes
 approved thread. Only after those publication actions succeed does it touch Jira
 again: it re-reads the ticket, works out the exact approved review transition, and
 then — as the last question in the run — asks how much time to log, so the status
-change and the worklog go out together in one turn once you answer. Then it
+change, a short comment naming what was addressed, and the worklog all go out
+together in one turn once you answer. Then it
 optionally captures a recurring lesson, and stops — no merging, approving, or
 terminal Jira transition.
 

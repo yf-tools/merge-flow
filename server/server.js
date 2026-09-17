@@ -146,6 +146,11 @@ const TOOLS = [
           description:
             "The username glab is authenticated as, for the ownership flag. Omit it and that check is reported in `undetermined`.",
         },
+        current_branch: {
+          type: "string",
+          description:
+            "`git branch --show-current` for the open workspace. Raises a `branch-mismatch` flag when it differs from the MR's source branch, so the report states the switch instead of guessing. Omit it and the check lands in `undetermined` — which never means 'already checked out'.",
+        },
       },
     },
   },
@@ -204,6 +209,11 @@ const TOOLS = [
           type: "string",
           description:
             "The username glab is authenticated as. Feeds both the ownership flag and the exclusion of your own prior replies from the reviewer count. Omit it and both degrade silently.",
+        },
+        current_branch: {
+          type: "string",
+          description:
+            "`git branch --show-current` for the open workspace. Raises a `branch-mismatch` flag when it differs from the MR's source branch, so the report states the switch instead of guessing. Omit it and the check lands in `undetermined` — which never means 'already checked out'.",
         },
         note_id_from_url: {
           type: "string",
@@ -280,7 +290,12 @@ const TOOL_HANDLERS = {
   },
 
   triage_mr_payload: (args) =>
-    triageMrPayload({ mr: args.mr, workspaceRemote: args.workspace_remote, currentUser: args.current_user }),
+    triageMrPayload({
+      mr: args.mr,
+      workspaceRemote: args.workspace_remote,
+      currentUser: args.current_user,
+      currentBranch: args.current_branch,
+    }),
 
   reconcile_discussion_counts: (args) =>
     reconcileDiscussionCounts({
@@ -294,7 +309,12 @@ const TOOL_HANDLERS = {
   triage_graphql_mr: (args) => {
     const { mr, discussions, hasNextPage, endCursor } = normalizeGraphqlMr(args.graphql);
     return {
-      triage: triageMrPayload({ mr, workspaceRemote: args.workspace_remote, currentUser: args.current_user }),
+      triage: triageMrPayload({
+        mr,
+        workspaceRemote: args.workspace_remote,
+        currentUser: args.current_user,
+        currentBranch: args.current_branch,
+      }),
       counts: reconcileDiscussionCounts({
         discussions,
         userNotesCount: mr.user_notes_count,
