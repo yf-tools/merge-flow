@@ -260,23 +260,79 @@ function localContext() {
   return { remote, user, branch };
 }
 
-function glab(args) {
-  try {
-    // An args array, not a shell string: the query contains braces, spaces and
-    // newlines, and no quoting scheme survives all three across shells.
-    // `--hostname` is glab's own spelling; ours is `--instance` for the reason in the
-    // header. The rename stops at this boundary.
-    return execFileSync(glabBin, instance ? [...args, "--hostname", instance] : args, {
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-    });
-  } catch (err) {
-    // Another program's output, so bounded in both length and content before it lands
-    // in this process's stderr and from there in the transcript.
-    const detail = scrubSecrets((err.stderr || err.stdout || err.message || String(err)).trim());
-    proc.stderr.write(`glab ${args.slice(0, 2).join(" ")} failed: ${detail}\n`);
-    proc.exit(1);
+/**
+ * Substrings that mean "the network was the problem, not the request". Matched against a
+ * lowercased message, so capitalisation in glab's output doesn't decide whether a retry
+ * happens. `glab` is Go, which is why `context deadline exceeded` and `no such host` are
+ * here — they are Go's usual wording for a timeout and a DNS failure, and the obvious
+ * `timeout` check alone misses both.
+ */
+const TRANSIENT = [
+  "timeout",
+  "timed out",
+  "connection refused",
+  "connection reset",
+  "dial tcp",
+  "context deadline exceeded",
+  "no such host",
+  "tls handshake",
+  "eof",
+];
+
+/**
+ * Block for `ms` without spending CPU. `execFileSync` makes this whole file synchronous, so
+ * there is nothing to await — but a `while (Date.now() < until) {}` spin costs a full core
+ * for the entire backoff. Measured: 800ms of spin burns 797ms of CPU, `Atomics.wait` burns
+ * 0ms for the same wall time. Pinning a core while waiting out a network blip competes with
+ * the very connection being retried.
+ */
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Run `glab` and return stdout, retrying only a transient network failure.
+ *
+ * **Retrying is only safe because every call in this file is a read** — one GraphQL query,
+ * or the REST fallback's GETs. Do not reuse this for a POST or PUT: a reply that timed out
+ * after the server accepted it would be posted twice.
+ *
+ * Two attempts rather than more. This sits on the critical path to Step 5's report, so the
+ * budget is one retry to cover a genuine blip, not a general resilience layer — a host that
+ * is actually down should fail fast and let the run report it.
+ */
+function glab(args, maxAttempts = 2) {
+  let lastErr;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      // An args array, not a shell string: the query contains braces, spaces and
+      // newlines, and no quoting scheme survives all three across shells.
+      // `--hostname` is glab's own spelling; ours is `--instance` for the reason in the
+      // header. The rename stops at this boundary.
+      return execFileSync(glabBin, instance ? [...args, "--hostname", instance] : args, {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+    } catch (err) {
+      lastErr = err;
+      const raw = (err.stderr || err.stdout || err.message || String(err)).trim();
+      const transient = TRANSIENT.some((s) => raw.toLowerCase().includes(s));
+      if (attempt >= maxAttempts || !transient) break;
+
+      // Said out loud: a silent stall here is indistinguishable from a slow network in the
+      // transcript, and this file's whole job is to be the fast part of batch 1.
+      const backoffMs = 500;
+      proc.stderr.write(`note: glab ${args.slice(0, 2).join(" ")} hit a transient failure, retrying once in ${backoffMs}ms\n`);
+      sleepSync(backoffMs);
+    }
   }
+
+  // Another program's output, so bounded in both length and content before it lands
+  // in this process's stderr and from there in the transcript.
+  const detail = scrubSecrets((lastErr.stderr || lastErr.stdout || lastErr.message || String(lastErr)).trim());
+  proc.stderr.write(`glab ${args.slice(0, 2).join(" ")} failed: ${detail}\n`);
+  proc.exit(1);
 }
 
 const checks = has("raw") ? null : await loadChecks();
