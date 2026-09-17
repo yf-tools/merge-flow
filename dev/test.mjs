@@ -7,7 +7,13 @@
  * Self-contained rather than importing from a sibling power — a standalone power
  * should be verifiable standalone. Node built-ins only.
  *
- * Run: node test.mjs
+ * Run: node dev/test.mjs
+ *
+ * Lives under `dev/` alongside the lint config because neither is part of the tool: the
+ * agent never reads either one. They still ship, since the Agent Plugins manifest has no
+ * `files` field and forbids adding one, so an install copies the whole directory. The
+ * folder only separates what a user receives from what a developer needs, and stops a
+ * stray `eslint.config.mjs` at the power root from being picked up by someone's editor.
  */
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -16,13 +22,16 @@ import { tmpdir } from "node:os";
 import { join, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { triageMrPayload, normalizeProjectPath, parseMrTitle } from "./server/mr-payload.js";
-import { reconcileDiscussionCounts, slimThreadsForReport } from "./server/discussions.js";
-import { attributeStagedHunks, parseStagedDiff } from "./server/hunks.js";
-import { normalizeGraphqlMr, stripGid, MR_QUERY } from "./server/graphql.js";
+import { triageMrPayload, normalizeProjectPath, normalizeProjectHost, parseMrTitle } from "../server/mr-payload.js";
+import { reconcileDiscussionCounts, slimThreadsForReport } from "../server/discussions.js";
+import { attributeStagedHunks, parseStagedDiff } from "../server/hunks.js";
+import { normalizeGraphqlMr, stripGid, MR_QUERY } from "../server/graphql.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = __dirname;
+/** The package root, one level up: this file lives in `dev/`, everything it checks does not. */
+const ROOT = resolve(__dirname, "..");
+/** Developer-only files, which sit beside this one rather than at the package root. */
+const DEV = __dirname;
 
 let passed = 0;
 const failures = [];
@@ -327,6 +336,30 @@ function testDeclaredFilesExist() {
   for (const f of ["LICENSE", "README.md", "POWER.md", "plugin.json", "mcp.json", "preflight.mjs"]) {
     truthy(`layout: ${f} exists at package root`, existsSync(join(ROOT, f)));
   }
+
+  // Developer-only files live in `dev/`, not at the root. Asserted in both directions,
+  // because the value of the split is entirely that the root holds only the tool: a file
+  // drifting back up is the regression, and it would otherwise pass unnoticed.
+  for (const f of ["test.mjs", "eslint.config.mjs"]) {
+    truthy(`layout: dev/${f} exists`, existsSync(join(DEV, f)));
+    falsy(`layout: ${f} is NOT at the package root`, existsSync(join(ROOT, f)));
+  }
+
+  // The lint config is committed while its packages are not, which is the opposite of the
+  // obvious split and therefore worth pinning. Its status as an audit rather than a gate
+  // is the part that rots quietly: someone wires it into a commit hook, it fails on a
+  // complexity limit this repo already exceeds, and the response is to weaken the limit.
+  const lint = readFileSync(join(DEV, "eslint.config.mjs"), "utf8");
+  truthy("layout: the lint config says it is an audit, not a gate", lint.includes("This is an audit, not a gate"));
+  truthy("layout: and names the suite as the actual gate", /`node dev\/test\.mjs` is the gate/.test(lint));
+  truthy(
+    "layout: and records where a rule should go once it earns its keep",
+    lint.includes("When a rule earns its keep, move it into the suite"),
+  );
+  truthy(
+    "layout: node_modules stays excluded, so committing the config cannot drag 80 MB in",
+    /^node_modules\/$/m.test(readFileSync(join(ROOT, ".gitignore"), "utf8")),
+  );
   truthy("layout: skills/mr-comments/SKILL.md exists", existsSync(join(ROOT, "skills", "mr-comments", "SKILL.md")));
 
   // A test already guards the skill folder's contents; nothing guarded the power root,
@@ -1821,8 +1854,21 @@ function testExecutableResolution() {
   eq("exec: a GIT_PATH pointing at nothing is rejected", missingPin.status, 2);
 
   // And the happy path still works, or all of the above is just a broken script.
+  //
+  // Asserted on the *reason* rather than on exit 0, because this test is about resolution
+  // and `git-context.mjs` also exits non-zero for a completely unrelated reason: the
+  // directory isn't a repo. It passes no `--cwd`, so it inherits the one the suite was
+  // invoked from, and that made the assertion quietly depend on where you ran it — green
+  // from the repo root, red from anywhere else. It failed the first time the suite was run
+  // from a parent directory, which is exactly the sort of thing that gets "fixed" by
+  // running it from the right place instead of by understanding it.
+  //
+  // "not a git repository" is itself proof that git resolved and ran. Only a resolution
+  // failure is a failure here.
   const ok = spawn({});
-  eq("exec: a normal environment still resolves git", ok.status, 0);
+  const resolved = ok.status === 0 || ok.err.includes("not a git repository");
+  truthy(`exec: a normal environment still resolves git (exit ${ok.status})`, resolved);
+  falsy("exec: and does not report it missing", ok.err.includes("not found in any absolute PATH"));
 }
 
 /** Pull the keyword flow-sequence out of a POWER.md frontmatter block. */
@@ -3214,7 +3260,7 @@ function testPreflight() {
   eq(
     "preflight: --json carries the documented top-level keys",
     Object.keys(report).sort(byCodeUnit),
-    ["checks", "failed", "node", "platform", "repo"],
+    ["checks", "failed", "node", "platform", "redacted", "repo"],
   );
   truthy("preflight: reports at least the required checks", report.checks.length >= 8);
   const STATUSES = ["fail", "info", "ok", "warn"];
@@ -3242,6 +3288,236 @@ function testPreflight() {
   truthy("preflight: the README tells a tester to run it", readFileSync(join(ROOT, "README.md"), "utf8").includes("node preflight.mjs"));
 }
 
+/**
+ * Credential scrubbing and identity redaction, which are two separate layers on purpose.
+ *
+ * `scrubSecrets` is always on. It exists because three places pass another program's
+ * output straight through: a failing `glab` call's stderr, a failing git read's stderr,
+ * and `glab auth status` when it finds no login. None of them has leaked anything, since
+ * `glab` masks its own tokens, but they are unbounded pass-throughs.
+ *
+ * The case that made it necessary rather than merely tidy is `git remote get-url origin`.
+ * It returns whatever is configured, `https://oauth2:TOKEN@host/group/repo.git` is a form
+ * people really use, and that value is printed, fed to the wrong-project check, and
+ * captured in the session transcript a tester might attach to a bug report.
+ *
+ * `--redact` is opt-in and covers identity rather than secrets: home path, GitLab user,
+ * GitLab host, repo path, branch name. Debugging your own machine wants the real values.
+ */
+function testRedaction() {
+  const files = [
+    ["preflight.mjs", join(ROOT, "preflight.mjs")],
+    ["fetch-mr.mjs", join(ROOT, "skills", "mr-comments", "scripts", "fetch-mr.mjs")],
+    ["git-context.mjs", join(ROOT, "skills", "mr-comments", "scripts", "git-context.mjs")],
+  ].map(([name, path]) => ({ name, text: readFileSync(path, "utf8") }));
+
+  // Invariant 4: three copies are only allowed with a test proving they agree.
+  const body = (text) =>
+    text
+      .slice(text.indexOf("function scrubSecrets(text, maxLength = 400) {"), text.indexOf("\n  return out;\n}", text.indexOf("function scrubSecrets")))
+      .replace(/\s+/g, " ")
+      .trim();
+  for (const f of files) {
+    truthy(`redact[${f.name}]: carries scrubSecrets`, f.text.includes("function scrubSecrets(text, maxLength = 400)"));
+    truthy(`redact[${f.name}]: its copy was locatable`, body(f.text).length > 200);
+  }
+  eq("redact: preflight and fetch-mr copies have not drifted", body(files[0].text), body(files[1].text));
+  eq("redact: preflight and git-context copies have not drifted", body(files[0].text), body(files[2].text));
+
+  // The pass-throughs must actually route through it, or the function is decoration.
+  truthy(
+    "redact[git-context.mjs]: the remote value is scrubbed before it is printed",
+    /remote:\s*remote\.ok \? scrubSecrets\(remote\.out\)/.test(files[2].text),
+  );
+  truthy(
+    "redact[git-context.mjs]: every git error field is scrubbed",
+    ["remoteError", "branchError", "dirtyError", "logError"].every((f) =>
+      new RegExp(String.raw`${f}:[^,]*scrubSecrets\(`).test(files[2].text),
+    ),
+  );
+  truthy(
+    "redact[fetch-mr.mjs]: the remote value is scrubbed",
+    files[1].text.includes("remote = raw ? scrubSecrets(raw) : undefined"),
+  );
+  truthy(
+    "redact[fetch-mr.mjs]: a failing glab call's stderr is scrubbed",
+    /const detail = scrubSecrets\(/.test(files[1].text),
+  );
+  truthy(
+    "redact[preflight.mjs]: every finding is scrubbed at the single choke point",
+    /detail: scrubSecrets\(detail\)/.test(files[0].text),
+  );
+
+  // --- Behavioural: run the real scrubber over planted credentials.
+  const scrub = extractScrubber(files[0].text);
+  const cases = [
+    ["remote with embedded token", "https://oauth2:glpat-ABCDEFGHIJ1234567890xyz@git.internal/g/r.git", "glpat-"],
+    ["bare GitLab PAT", "fatal: auth failed for glpat-ABCDEFGHIJ1234567890xyz", "glpat-ABCDEFGHIJ"],
+    ["GitLab deploy token", "using gldt-ABCDEFGHIJ1234567890xyz now", "gldt-ABCDEFGHIJ"],
+    ["GitHub token", "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", "ghp_ABCDEF"],
+    ["Atlassian token", "ATATT3xFfGF0ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ATATT3xFfGF0"],
+    ["bearer header", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123", "abcdefghijklm"],
+    ["JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r", "eyJhbGciOi"],
+    ["key=value", "GITLAB_TOKEN=supersecretvalue123", "supersecretvalue123"],
+  ];
+  for (const [label, input, mustNotAppear] of cases) {
+    const out = scrub(input);
+    falsy(`redact[scrub]: ${label} is removed`, out.includes(mustNotAppear));
+    truthy(`redact[scrub]: ${label} leaves a marker`, out.includes("<redacted>"));
+  }
+
+  // A git SHA is not a secret and destroying it would cost real diagnostic value.
+  const sha = "fde055d3ea1a78320aa927196da841573e6b01c6";
+  truthy("redact[scrub]: a 40-char git SHA survives", scrub(`commit ${sha}`).includes(sha));
+  // And the host survives the userinfo strip, or the wrong-project check loses its input.
+  truthy(
+    "redact[scrub]: stripping userinfo keeps the host and path",
+    scrub("https://oauth2:glpat-ABCDEFGHIJ1234567890xyz@git.internal/g/r.git").includes("@git.internal/g/r.git"),
+  );
+  // Unbounded pass-through is the other half of the finding.
+  const long = scrub("x".repeat(5000));
+  truthy(`redact[scrub]: output is bounded (${long.length} chars)`, long.length < 500);
+  truthy("redact[scrub]: and says it truncated", long.includes("(truncated)"));
+
+  // --- Behavioural: --redact must remove identity and keep the diagnostics.
+  const run = (args) => spawnSync(process.execPath, [join(ROOT, "preflight.mjs"), ...args], { encoding: "utf8", timeout: 120_000 });
+  const plain = run(["--json", "--repo", ROOT]);
+  const hidden = run(["--redact", "--json", "--repo", ROOT]);
+
+  const plainReport = JSON.parse(String(plain.stdout));
+  const hiddenReport = JSON.parse(String(hidden.stdout));
+  eq("redact: the plain report is marked unredacted", plainReport.redacted, false);
+  eq("redact: the redacted report says so", hiddenReport.redacted, true);
+  eq("redact: --redact does not change any verdict", hiddenReport.checks.map((c) => c.status), plainReport.checks.map((c) => c.status));
+  eq("redact: nor the failed count", hiddenReport.failed, plainReport.failed);
+
+  // The repo path is the one value present on every machine this suite runs on.
+  const hiddenText = JSON.stringify(hiddenReport);
+  falsy("redact: the repo path is gone from the redacted report", hiddenText.includes(ROOT));
+  truthy("redact: replaced by a placeholder", hiddenText.includes("<repo>"));
+  // Versions are diagnostics and must survive.
+  truthy("redact: the node version still appears", hiddenText.includes(process.version));
+}
+
+/**
+ * Every function that parses input this project does not control, timed against inputs
+ * shaped to make it work hardest.
+ *
+ * This exists because a linter flagged one regex for possible backtracking and the useful
+ * answer turned out not to be the linter's. Measuring the real function against hostile
+ * input is direct evidence; a heuristic about pattern shape is not, and it both misses
+ * cases and fires on safe ones. So the rule that earned its keep moved in here, where it
+ * runs with the rest of the suite, needs no packages and no network, and covers whole
+ * parsers rather than individual patterns.
+ *
+ * What it protects: an MR payload, a discussions response and a `git diff` all arrive from
+ * somewhere else, and a run that hangs on one looks exactly like a run that crashed.
+ *
+ * The budget is deliberately loose. Observed worst case across everything here is a couple
+ * of milliseconds, so 250 ms fails on a genuine blowup while staying quiet on a loaded CI
+ * box. A tight budget on a fast operation is just a flaky test.
+ */
+function testInputRobustness() {
+  const BUDGET_MS = 250;
+  const scrub = extractScrubber(readFileSync(join(ROOT, "preflight.mjs"), "utf8"));
+
+  // --- Hostile shapes, each aimed at a specific parser.
+  const bigDiff = [
+    "diff --git a/a.ts b/a.ts",
+    "@@ -1,1 +1,2 @@",
+    "+x",
+    // Unterminated hunk headers, quoted paths, and header-shaped content lines together.
+    String.raw`diff --git "a/caf\303\251.ts" "b/caf\303\251.ts"`,
+    "@@@ -1,5 -1,5 +1,7 @@@ ctx",
+    "--- not a header",
+    "+++ also not a header",
+  ].join("\n");
+
+  const manyThreads = Array.from({ length: 4000 }, (_, i) => ({
+    id: `d${i}`,
+    notes: [{ id: i, system: i % 3 === 0, resolvable: true, resolved: i % 2 === 0, body: "b".repeat(200), author: { username: `u${i % 7}` } }],
+  }));
+
+  const deepGraphql = {
+    data: {
+      project: {
+        mergeRequest: {
+          iid: "1",
+          title: `fix(${"AB-1 ".repeat(500)}): x`,
+          userNotesCount: 1,
+          discussions: {
+            nodes: Array.from({ length: 2000 }, (_, i) => ({
+              id: `gid://gitlab/Discussion/${i}`,
+              notes: { nodes: [{ id: `gid://gitlab/Note/${i}`, body: "z".repeat(100), author: { username: "u" } }] },
+            })),
+          },
+        },
+      },
+    },
+  };
+
+  const cases = [
+    // The credential scrubber, on inputs built to make each pattern scan far then fail.
+    ["scrubSecrets: :// with no @", () => scrub(`https://${"a".repeat(50_000)}`)],
+    ["scrubSecrets: gl prefix, no dash", () => scrub(`gl${"abcdefgh".repeat(6_000)}`)],
+    ["scrubSecrets: eyJ with no dots", () => scrub(`eyJ${"A".repeat(50_000)}`)],
+    ["scrubSecrets: Bearer + long run", () => scrub(`Bearer ${"A".repeat(50_000)}`)],
+    ["scrubSecrets: token= + long value", () => scrub(`token=${"v".repeat(50_000)}`)],
+    ["scrubSecrets: repeated near-misses", () => scrub("gl-x ".repeat(10_000))],
+    ["scrubSecrets: nested :// runs", () => scrub("://a@".repeat(10_000))],
+
+    // Diff parsing, which reads whatever git printed.
+    ["parseStagedDiff: adversarial headers", () => parseStagedDiff(bigDiff.repeat(400))],
+    ["parseStagedDiff: one enormous line", () => parseStagedDiff(`diff --git a/a b/a\n@@ -1 +1 @@\n+${"x".repeat(200_000)}`)],
+    ["attributeStagedHunks: same, with bases", () => attributeStagedHunks({ diffText: bigDiff.repeat(400), approvedFiles: ["a.ts"] })],
+
+    // Payload parsing, which reads whatever the API returned.
+    ["reconcileDiscussionCounts: 4000 threads", () => reconcileDiscussionCounts({ discussions: manyThreads, userNotesCount: 1, currentUser: "u1" })],
+    ["slimThreadsForReport: 4000 threads", () => slimThreadsForReport(manyThreads)],
+    ["normalizeGraphqlMr: 2000 discussions", () => normalizeGraphqlMr(deepGraphql)],
+    ["triageMrPayload: pathological title", () => triageMrPayload({ mr: { iid: 1, state: "opened", user_notes_count: 1, title: `fix(${"UTF-8 ".repeat(5_000)}): x`, web_url: `https://h/${"g/".repeat(5_000)}r/-/merge_requests/1` } })],
+
+    // String normalisers, which read URLs and titles from the payload.
+    ["parseMrTitle: many key candidates", () => parseMrTitle(`fix(${"AB-12 ".repeat(10_000)}): x`)],
+    ["normalizeProjectPath: many slashes", () => normalizeProjectPath(`https://h/${"a/".repeat(20_000)}r.git`)],
+    ["normalizeProjectPath: many @ signs", () => normalizeProjectPath(`https://${"u:p@".repeat(10_000)}h/g/r.git`)],
+    ["normalizeProjectHost: same", () => normalizeProjectHost(`https://${"u:p@".repeat(10_000)}h/g/r.git`)],
+    ["stripGid: long gid", () => stripGid(`gid://gitlab/Note/${"1".repeat(50_000)}`)],
+  ];
+
+  let worst = 0;
+  let worstLabel = "";
+  for (const [label, fn] of cases) {
+    const started = process.hrtime.bigint();
+    try {
+      fn();
+    } catch {
+      // A rejected input is a valid outcome; this measures time, not the verdict. Several
+      // of these functions throw on malformed input by design and that is correct.
+    }
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    if (ms > worst) {
+      worst = ms;
+      worstLabel = label;
+    }
+    truthy(`robust[${label}]: completes in ${ms.toFixed(1)}ms (budget ${BUDGET_MS}ms)`, ms < BUDGET_MS);
+  }
+  // Surfaced in passing output so a slow drift is visible before it becomes a failure.
+  truthy(`robust: slowest was ${worstLabel} at ${worst.toFixed(1)}ms`, worst < BUDGET_MS);
+}
+
+/**
+ * Evaluate the shipped `scrubSecrets` rather than a copy of its rules, so this tests the
+ * real function. Reading it out of the file is what keeps the drift check above honest:
+ * if the source changes, this exercises the change.
+ */
+function extractScrubber(source) {
+  const start = source.indexOf("function scrubSecrets(text, maxLength = 400) {");
+  const end = source.indexOf("\n  return out;\n}", start) + "\n  return out;\n}".length;
+  // eslint-disable-next-line no-new-func
+  return new Function(`${source.slice(start, end)}\nreturn scrubSecrets;`)();
+}
+
 // ---------- Runner ----------
 
 const suites = [
@@ -3250,6 +3526,8 @@ const suites = [
   ["executable resolution", testExecutableResolution],
   ["git-context script behaviour", testGitContextScript],
   ["preflight setup check", testPreflight],
+  ["credential scrubbing and redaction", testRedaction],
+  ["input robustness", testInputRobustness],
   ["workflow policy contracts", testWorkflowPolicyContracts],
   ["progressive disclosure", testProgressiveDisclosure],
   ["self-review template shape", testSelfReviewTemplateShape],

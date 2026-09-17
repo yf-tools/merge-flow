@@ -89,6 +89,41 @@ function fileExists(p) {
   }
 }
 
+/**
+ * Remove anything credential-shaped from text that came from another program.
+ *
+ * The vendor prefixes are matched rather than long random-looking runs, deliberately: a
+ * 40-character hex string is far more often a git SHA than a secret, and destroying SHAs
+ * would cost real diagnostic value for no gain.
+ *
+ * The first rule is why this file needs it at all. `git remote get-url origin` returns
+ * whatever is configured, and `https://oauth2:TOKEN@host/group/repo.git` is a form people
+ * really use, so the userinfo half of any URL goes before anything else looks at it. The
+ * rest bounds what a failing git command can echo into this output.
+ *
+ * Duplicated verbatim in fetch-mr.mjs and preflight.mjs, which cannot share a module
+ * without breaking this folder's standalone use; a test asserts all three are identical.
+ */
+function scrubSecrets(text, maxLength = 400) {
+  let out = String(text ?? "")
+    .replace(/:\/\/[^/@\s]+@/g, "://<redacted>@")
+    .replace(/\bgl[a-z]{2,8}-[A-Za-z0-9_-]{20,}/g, "<redacted>")
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "<redacted>")
+    .replace(/\bATATT[A-Za-z0-9_=-]{20,}/g, "<redacted>")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, "<redacted>")
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, "<redacted>")
+    // `\w` rather than `[A-Za-z0-9_]`: this pattern is case-insensitive for `Bearer`/`Basic`,
+    // and under `/i` spelling both `A-Z` and `a-z` declares the same range twice.
+    .replace(/\b(?:Bearer|Basic) [\w.+/=-]{12,}/gi, "<redacted>")
+    // No `\b` before the keyword: `_` is a word character, so `\bTOKEN` never matches
+    // inside `GITLAB_TOKEN`, which is the commonest spelling of all. Starting the match at
+    // the keyword leaves any prefix outside it and intact, so `GITLAB_TOKEN=x` becomes
+    // `GITLAB_TOKEN=<redacted>` and the variable stays identifiable.
+    .replace(/(token|secret|password|passwd|api[_-]?key)( *[:=] *)[^\s"',;)]{8,}/gi, "$1$2<redacted>");
+  if (out.length > maxLength) out = `${out.slice(0, maxLength)}... (truncated)`;
+  return out;
+}
+
 const gitBin = resolveBin("git", "GIT_PATH");
 if (!gitBin) {
   proc.stderr.write(
@@ -121,19 +156,24 @@ const log = git(["log", "--oneline", "-n", String(Number.isFinite(logCount) ? lo
 const lines = (r) => (r.ok && r.out ? r.out.split(/\r?\n/) : []);
 
 // `null` on a failed read with the reason alongside — never a silent "".
+//
+// `remote` is scrubbed because a configured remote can legitimately embed a credential
+// (`https://oauth2:TOKEN@host/group/repo.git`), and this value is printed, carried into
+// the wrong-project check, and ends up in the session transcript. The `*Error` fields are
+// scrubbed and bounded because they are another program's output passed straight through.
 const result = {
-  remote: remote.ok ? remote.out : null,
-  remoteError: remote.ok ? undefined : remote.error,
+  remote: remote.ok ? scrubSecrets(remote.out) : null,
+  remoteError: remote.ok ? undefined : scrubSecrets(remote.error),
 
   branch: branch.ok ? branch.out || null : null,
-  branchError: branch.ok ? undefined : branch.error,
+  branchError: branch.ok ? undefined : scrubSecrets(branch.error),
 
   dirty: status.ok ? status.out.length > 0 : null,
   dirtyFiles: lines(status),
-  dirtyError: status.ok ? undefined : status.error,
+  dirtyError: status.ok ? undefined : scrubSecrets(status.error),
 
   log: lines(log),
-  logError: log.ok ? undefined : log.error,
+  logError: log.ok ? undefined : scrubSecrets(log.error),
 };
 
 proc.stdout.write(JSON.stringify(result, null, 2) + "\n");

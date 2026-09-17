@@ -2,7 +2,12 @@
 /**
  * Setup check for gitlab-mr-review. Run this once, before your first merge request.
  *
- *   node preflight.mjs [--repo <path-to-your-project>] [--json]
+ *   node preflight.mjs [--repo <path-to-your-project>] [--json] [--redact]
+ *
+ * `--redact` replaces your home path, GitLab username, GitLab host, repo path and branch
+ * name with placeholders, so the output can be pasted into a bug report without being
+ * read first. Every diagnostic fact survives it. Credential scrubbing is separate and
+ * always on; see `scrubSecrets`.
  *
  * Why this exists: every prerequisite of this power fails *quietly and plausibly*, and
  * each one looks like a bug in the power rather than a gap in the setup.
@@ -47,7 +52,77 @@ const flag = (name, fallback) => {
   return i !== -1 && argv[i + 1] ? argv[i + 1] : fallback;
 };
 const asJson = argv.includes("--json");
+const redactMode = argv.includes("--redact");
 const repo = flag("repo", proc.cwd());
+
+/**
+ * Two independent layers, because they answer different questions.
+ *
+ * `scrubSecrets` is always on and removes anything credential-shaped. There is no case
+ * where a token should reach a terminal, a log or an issue, so it needs no flag.
+ *
+ * The identity map below is `--redact`, and it is opt-in: debugging your own machine
+ * needs the real paths, and pasting into a bug report does not. It replaces who and
+ * where you are, and leaves every diagnostic fact intact.
+ */
+const identity = new Map();
+const hideValue = (value, placeholder) => {
+  const v = String(value ?? "").trim();
+  if (v.length >= 3) identity.set(v, placeholder);
+};
+
+/**
+ * Remove anything credential-shaped from text that came from another program.
+ *
+ * The vendor prefixes are matched rather than long random-looking runs, deliberately: a
+ * 40-character hex string is far more often a git SHA than a secret, and destroying SHAs
+ * would cost real diagnostic value for no gain.
+ *
+ * The first rule is the one the audit turned up. `git remote get-url origin` returns
+ * whatever is configured, and `https://oauth2:TOKEN@host/group/repo.git` is a form people
+ * really use, so the userinfo half of any URL goes before anything else looks at it.
+ *
+ * Duplicated verbatim in both bundled scripts, which cannot import from here; a test
+ * asserts all three copies are identical.
+ */
+function scrubSecrets(text, maxLength = 400) {
+  let out = String(text ?? "")
+    .replace(/:\/\/[^/@\s]+@/g, "://<redacted>@")
+    .replace(/\bgl[a-z]{2,8}-[A-Za-z0-9_-]{20,}/g, "<redacted>")
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "<redacted>")
+    .replace(/\bATATT[A-Za-z0-9_=-]{20,}/g, "<redacted>")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, "<redacted>")
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, "<redacted>")
+    // `\w` rather than `[A-Za-z0-9_]`: this pattern is case-insensitive for `Bearer`/`Basic`,
+    // and under `/i` spelling both `A-Z` and `a-z` declares the same range twice.
+    .replace(/\b(?:Bearer|Basic) [\w.+/=-]{12,}/gi, "<redacted>")
+    // No `\b` before the keyword: `_` is a word character, so `\bTOKEN` never matches
+    // inside `GITLAB_TOKEN`, which is the commonest spelling of all. Starting the match at
+    // the keyword leaves any prefix outside it and intact, so `GITLAB_TOKEN=x` becomes
+    // `GITLAB_TOKEN=<redacted>` and the variable stays identifiable.
+    .replace(/(token|secret|password|passwd|api[_-]?key)( *[:=] *)[^\s"',;)]{8,}/gi, "$1$2<redacted>");
+  if (out.length > maxLength) out = `${out.slice(0, maxLength)}... (truncated)`;
+  return out;
+}
+
+/** Escape a literal for use in a regex, treating `/` and `\` as interchangeable. */
+function literalRegex(value) {
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+  return new RegExp(escaped.replace(/\\\\|\//g, String.raw`[\\/]`), "gi");
+}
+
+/** Applied at output time, once every check has contributed what it discovered. */
+function applyRedaction(text) {
+  if (!redactMode) return String(text);
+  let out = String(text);
+  // Longest first, so a hostname nested inside a longer value is not half-replaced.
+  const ordered = [...identity.entries()].sort((a, b) => b[0].length - a[0].length);
+  for (const [value, placeholder] of ordered) out = out.replace(literalRegex(value), placeholder);
+  return out;
+}
+
+hideValue(homedir(), "<home>");
+hideValue(repo, "<repo>");
 
 /** The lowest Node this power's shipped code actually runs on, and what it supports. */
 const NODE_REQUIRED = 16; // `replaceAll` in server/hunks.js, `node:` import prefixes
@@ -58,8 +133,21 @@ const NODE_SUPPORTED = 18; // oldest LTS worth telling a tester to be on
  * `ok` and `info` pass, `warn` passes with a caveat, `fail` sets the exit code.
  */
 const checks = [];
+
+/**
+ * The single choke point every finding passes through, which is why the credential scrub
+ * lives here rather than at each call site. Scrubbing at the ~20 places that build a
+ * detail string would mean one forgotten call is a leak; scrubbing here means a new check
+ * inherits it for free.
+ */
 const add = (group, name, status, detail, consequence) =>
-  checks.push({ group, name, status, detail, consequence: consequence ?? null });
+  checks.push({
+    group,
+    name,
+    status,
+    detail: scrubSecrets(detail),
+    consequence: consequence == null ? null : scrubSecrets(consequence, 600),
+  });
 
 // ---------- resolution, as a diagnostic rather than a hard stop ----------
 
@@ -227,10 +315,15 @@ function checkGlabAuth(glab) {
   // exported from a shell profile is invisible to an editor launched from a desktop
   // launcher, which inherits no interactive shell, so it works in a terminal and fails
   // in Kiro, with the same `glab` binary either way.
+  // Only the variable NAME is captured, never the value: the class stops at the colon,
+  // and glab prints the token itself after one.
   const source = /Token found in ([^:\n]+)/i.exec(text);
   const fromEnv = /environment variable/i.test(source?.[1] ?? "");
   const tokenNote = source ? ` (token from ${source[1].trim()})` : "";
   const detail = `${login[2]} @ ${login[1]}${tokenNote}`;
+
+  hideValue(login[1], "<gitlab-host>");
+  hideValue(login[2], "<user>");
 
   if (!fromEnv) {
     add("Required", "glab auth", "ok", detail);
@@ -259,7 +352,12 @@ function checkServer() {
   }
 
   const messages = [
-    { jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "preflight", version: "1.0.0" } } },
+    {
+      jsonrpc: "2.0",
+      id: 0,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "preflight", version: "1.0.0" } },
+    },
     { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
   ];
   const r = spawnSync(proc.execPath, [entry], {
@@ -315,6 +413,8 @@ function checkGitContext(script) {
   const parsed = tryParse(String(r.stdout ?? ""));
   if (parsed && typeof parsed.dirty === "boolean") {
     const branch = parsed.branch ?? "(detached)";
+    // A branch name carries the ticket key, which gives away the project prefix.
+    hideValue(parsed.branch, "<branch>");
     add("Required", "git-context.mjs", "ok", `ran against ${repo}: branch ${branch}, dirty ${parsed.dirty}`);
     return;
   }
@@ -342,7 +442,14 @@ function checkFetchMr(script) {
   const r = spawnSync(proc.execPath, [script], { encoding: "utf8", timeout: 30_000 });
   const guarded = r.status === 2 && String(r.stderr ?? "").includes("--instance");
   if (guarded) add("Required", "fetch-mr.mjs", "ok", "loads, and its argument guard holds");
-  else add("Required", "fetch-mr.mjs", "fail", `expected exit 2 with a usage line, got exit ${r.status}`, "The MR fetch will fail.");
+  else
+    add(
+      "Required",
+      "fetch-mr.mjs",
+      "fail",
+      `expected exit 2 with a usage line, got exit ${r.status}`,
+      "The MR fetch will fail.",
+    );
 }
 
 function tryParse(text) {
@@ -392,8 +499,20 @@ function checkMcpConfig() {
     }
   }
 
-  matchServer(found, "glab", /glab|gitlab/, "fail", "Every GitLab call in the workflow goes through this. Nothing will work without it.");
-  matchServer(found, "atlassian", /atlassian|jira/, "warn", "Jira verification, both status transitions and the worklog fall back to asking you by hand. The workflow will not skip them.");
+  matchServer(
+    found,
+    "glab",
+    /glab|gitlab/,
+    "fail",
+    "Every GitLab call in the workflow goes through this. Nothing will work without it.",
+  );
+  matchServer(
+    found,
+    "atlassian",
+    /atlassian|jira/,
+    "warn",
+    "Jira verification, both status transitions and the worklog fall back to asking you by hand. The workflow will not skip them.",
+  );
 }
 
 function matchServer(found, label, pattern, missingStatus, consequence) {
@@ -445,20 +564,28 @@ function render() {
     if (rows.length === 0) continue;
     lines.push(group);
     for (const c of rows) {
-      const [first, ...rest] = detailLines(c.detail);
-      lines.push(`  ${MARK[c.status]} ${c.name.padEnd(NAME_WIDTH)} ${first}`);
-      lines.push(...rest);
-      if (c.consequence) lines.push(...wrap(c.consequence, 92).map((l, i) => GUTTER + (i === 0 ? "-> " : "   ") + l));
+      const [first, ...rest] = detailLines(applyRedaction(c.detail));
+      lines.push(`  ${MARK[c.status]} ${c.name.padEnd(NAME_WIDTH)} ${first}`, ...rest);
+      if (c.consequence) {
+        const wrapped = wrap(applyRedaction(c.consequence), 92);
+        lines.push(...wrapped.map((l, i) => GUTTER + (i === 0 ? "-> " : "   ") + l));
+      }
     }
     lines.push("");
   }
 
   const failed = checks.filter((c) => c.status === "fail");
   const warned = checks.filter((c) => c.status === "warn");
-  lines.push(failed.length === 0 ? "Ready. No blocking problems found." : `${failed.length} blocking problem(s): ${failed.map((c) => c.name).join(", ")}`);
+  lines.push(
+    failed.length === 0
+      ? "Ready. No blocking problems found."
+      : `${failed.length} blocking problem(s): ${failed.map((c) => c.name).join(", ")}`,
+  );
   if (warned.length > 0) lines.push(`${warned.length} warning(s): ${warned.map((c) => c.name).join(", ")}`);
 
   // Two things no script can observe from here, and both have cost real time.
+  if (redactMode) lines.push("", "Identity redacted for sharing. Re-run without --redact to see real paths.");
+
   lines.push(
     "",
     "Two things this cannot check for you:",
@@ -485,5 +612,24 @@ checkMcpConfig();
 checkPathHygiene([git, glab]);
 
 const failedCount = checks.filter((c) => c.status === "fail").length;
-proc.stdout.write(asJson ? JSON.stringify({ repo, platform: proc.platform, node: proc.version, checks, failed: failedCount }, null, 2) + "\n" : render());
+
+if (asJson) {
+  // Redaction applies to the structured form too, or `--redact --json` would quietly
+  // hand back everything the text form just removed.
+  const report = {
+    repo: applyRedaction(repo),
+    platform: proc.platform,
+    node: proc.version,
+    redacted: redactMode,
+    checks: checks.map((c) => ({
+      ...c,
+      detail: applyRedaction(c.detail),
+      consequence: c.consequence == null ? null : applyRedaction(c.consequence),
+    })),
+    failed: failedCount,
+  };
+  proc.stdout.write(JSON.stringify(report, null, 2) + "\n");
+} else {
+  proc.stdout.write(render());
+}
 proc.exit(failedCount === 0 ? 0 : 1);

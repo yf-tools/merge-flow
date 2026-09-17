@@ -20,6 +20,6 @@
     "graphql.js"
   ],
   "scripts": {
-    "test": "node ../test.mjs"
+    "test": "node ../dev/test.mjs"
   }
 }

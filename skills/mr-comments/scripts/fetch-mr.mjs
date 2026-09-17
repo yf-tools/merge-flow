@@ -152,6 +152,42 @@ function fileExists(p) {
   }
 }
 
+/**
+ * Remove anything credential-shaped from text that came from another program.
+ *
+ * The vendor prefixes are matched rather than long random-looking runs, deliberately: a
+ * 40-character hex string is far more often a git SHA than a secret, and destroying SHAs
+ * would cost real diagnostic value for no gain.
+ *
+ * Two things here need it. `git remote get-url origin` returns whatever is configured,
+ * and `https://oauth2:TOKEN@host/group/repo.git` is a form people really use, so the
+ * userinfo half of any URL goes first. And a failing `glab` call has its stderr echoed
+ * verbatim, which is an unbounded pass-through of a third party's output into this
+ * process's own — bounded here in length as well as content.
+ *
+ * Duplicated verbatim in git-context.mjs and preflight.mjs, which cannot share a module
+ * without breaking this folder's standalone use; a test asserts all three are identical.
+ */
+function scrubSecrets(text, maxLength = 400) {
+  let out = String(text ?? "")
+    .replace(/:\/\/[^/@\s]+@/g, "://<redacted>@")
+    .replace(/\bgl[a-z]{2,8}-[A-Za-z0-9_-]{20,}/g, "<redacted>")
+    .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "<redacted>")
+    .replace(/\bATATT[A-Za-z0-9_=-]{20,}/g, "<redacted>")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, "<redacted>")
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, "<redacted>")
+    // `\w` rather than `[A-Za-z0-9_]`: this pattern is case-insensitive for `Bearer`/`Basic`,
+    // and under `/i` spelling both `A-Z` and `a-z` declares the same range twice.
+    .replace(/\b(?:Bearer|Basic) [\w.+/=-]{12,}/gi, "<redacted>")
+    // No `\b` before the keyword: `_` is a word character, so `\bTOKEN` never matches
+    // inside `GITLAB_TOKEN`, which is the commonest spelling of all. Starting the match at
+    // the keyword leaves any prefix outside it and intact, so `GITLAB_TOKEN=x` becomes
+    // `GITLAB_TOKEN=<redacted>` and the variable stays identifiable.
+    .replace(/(token|secret|password|passwd|api[_-]?key)( *[:=] *)[^\s"',;)]{8,}/gi, "$1$2<redacted>");
+  if (out.length > maxLength) out = `${out.slice(0, maxLength)}... (truncated)`;
+  return out;
+}
+
 const glabBin = resolveBin("glab", "GLAB_PATH");
 if (!glabBin) {
   proc.stderr.write(
@@ -215,7 +251,10 @@ function localContext() {
   // a failed read: the wrong-project check reports `undetermined` rather than passing.
   if (gitBin) {
     try {
-      remote = execFileSync(gitBin, ["remote", "get-url", "origin"], { encoding: "utf8" }).trim() || undefined;
+      // Scrubbed: a configured remote can embed a credential, and this value is printed,
+      // fed to the wrong-project check, and captured in the session transcript.
+      const raw = execFileSync(gitBin, ["remote", "get-url", "origin"], { encoding: "utf8" }).trim();
+      remote = raw ? scrubSecrets(raw) : undefined;
     } catch {
       // Not a git repo, or no `origin`.
     }
@@ -243,7 +282,9 @@ function glab(args) {
       maxBuffer: 64 * 1024 * 1024,
     });
   } catch (err) {
-    const detail = (err.stderr || err.stdout || err.message || String(err)).trim();
+    // Another program's output, so bounded in both length and content before it lands
+    // in this process's stderr and from there in the transcript.
+    const detail = scrubSecrets((err.stderr || err.stdout || err.message || String(err)).trim());
     proc.stderr.write(`glab ${args.slice(0, 2).join(" ")} failed: ${detail}\n`);
     proc.exit(1);
   }
@@ -346,7 +387,7 @@ if (has("rest")) {
   // failure here would otherwise look like a successful empty fetch.
   const parsed = JSON.parse(out);
   if (parsed.errors) {
-    proc.stderr.write(`GraphQL returned errors: ${JSON.stringify(parsed.errors)}\n`);
+    proc.stderr.write(`GraphQL returned errors: ${scrubSecrets(JSON.stringify(parsed.errors), 800)}\n`);
     proc.exit(1);
   }
   if (!parsed.data?.project?.mergeRequest) {

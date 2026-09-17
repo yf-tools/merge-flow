@@ -160,9 +160,59 @@ It writes nothing, mutates no git state, and makes no network call beyond
 `glab auth status`. It exits 0 when nothing is blocking and 1 otherwise, and `--json`
 gives the same report as structured data.
 
+### Sharing the output
+
+```bash
+node preflight.mjs --repo /path/to/your/project --redact
+```
+
+The normal output identifies you: your home path carries your name, and it prints your
+GitLab username, your GitLab host, your repo path and your branch name. None of that is a
+credential, all of it is company information, and it matters the moment someone pastes it
+into an issue. `--redact` replaces those five with `<home>`, `<user>`, `<gitlab-host>`,
+`<repo>` and `<branch>`, so the output can be attached without being read first. Every
+diagnostic fact survives it, and a test asserts no verdict changes.
+
+Credential scrubbing is a separate layer and is **always on**, in both this script and the
+two bundled ones. Three places pass another program's output straight through, and one of
+them matters more than it looks: `git remote get-url origin` returns whatever is
+configured, and `https://oauth2:TOKEN@host/group/repo.git` is a form people really use.
+Any URL's userinfo half is stripped, along with GitLab, GitHub, Atlassian and Slack token
+shapes, bearer headers, JWTs, and `token=`/`secret=`/`password=` values. Git SHAs are
+deliberately left alone, since a 40-character hex string is far more often a commit than a
+secret. Echoed output is also length-bounded.
+
 Two things it deliberately does not claim to check, because they live in the editor
 rather than on disk: whether Kiro has actually connected to the bundled server, and
 whether you have accepted the tool prompts. Both are printed as reminders instead.
+
+## Checks
+
+```bash
+node dev/test.mjs
+```
+
+**This is the gate.** It runs in seconds, needs no network and no dependencies, and every
+assertion in it exists because something broke once. It covers the bundled server's
+decision modules, the manifest, the skill frontmatter, the workflow policies a rewrite
+could silently drop, credential scrubbing, and the setup check. It also times every
+function that parses input this project does not control (an MR payload, a discussions
+response, a `git diff`) against adversarial inputs, and fails on a real backtracking
+blowup rather than on a heuristic about pattern shape.
+
+`dev/eslint.config.mjs` is committed for an occasional deeper audit with
+[SonarJS](https://github.com/SonarSource/eslint-plugin-sonarjs), and its dependencies are
+deliberately **not** in the repo. The config is the shared standard, so it belongs in
+version control; the packages are 16,472 files and 79.9 MB against a power that ships as
+43 files and 3 MB, so they belong in a scratch directory outside it. The config's own
+header explains how to run it, and why it is an audit rather than a step before every
+commit.
+
+Both live under `dev/` because neither is part of the tool — the agent reads neither one.
+They still ship: the Agent Plugins manifest has no `files` field and forbids adding one, so
+installing copies the whole directory. The folder separates what a user receives from what
+a developer needs, and keeps a stray `eslint.config.mjs` out of the power root where a
+tester's editor would try to lint with a plugin they haven't installed.
 
 ## Requirements
 
