@@ -566,7 +566,11 @@ function loadPolicyDocs() {
     plugin: readFileSync(join(ROOT, "plugin.json"), "utf8"),
     powerFlat: power.replace(/\s+/g, " "),
     readmeFlat: readme.replace(/\s+/g, " "),
+    // reporting.md held Steps 5, 6b and 8 until the router split. Each now has its own
+    // file, read at the step that needs it, so the assertions follow the content.
     reporting: byName("reporting.md"),
+    scopeGate: byName("scope-gate.md"),
+    summaryGate: byName("summary-gate.md"),
   };
 }
 
@@ -634,6 +638,69 @@ function testWorkflowPolicyContracts() {
   assertBatchPlanShape(docs, marks);
   assertPortableCommands(docs);
   assertJiraCommentWiring(docs, marks);
+  assertStepOwnership(docs);
+}
+
+/**
+ * Step ownership: each step-bound reference holds its own step's procedure, and no other
+ * reference holds a copy of it.
+ *
+ * This exists because `assertCorpusPhrases` cannot catch a misfiling. It proves a rule is
+ * present *somewhere* in the corpus, which is exactly what makes moving prose between files
+ * safe — and exactly why it is blind to prose that landed in the wrong file. Observed: the
+ * Step 6 Jira transition procedure sat in `fixing.md`, which a run reads at Step 7, *after*
+ * the transition should already have run, while `checkout.md`'s index row claimed that
+ * content and the file did not contain `transitionJiraIssue` at all. Every phrase involved
+ * was pinned and present, so 990 assertions passed across the whole period it was broken.
+ *
+ * The uniqueness half is the part that catches it. A marker appearing in two references
+ * means either a duplicated procedure (invariant 4) or one of the two copies is misfiled;
+ * both need a human look, so both fail here.
+ *
+ * Cross-cutting references own no step and are deliberately absent from this table:
+ * `failures.md` (evidence), `batching.md` (evidence), `user-mistakes.md` (a catalogue keyed
+ * by case), `glab-tooling.md` (keyed by symptom).
+ */
+function assertStepOwnership(docs) {
+  const { refs } = docs;
+
+  /** reference → a marker that only that file's step-owning procedure would contain. */
+  const owners = {
+    "investigating.md": "## The three traps, before anything else",
+    "jira-identity.md": "## Reconcile one authoritative Jira identity",
+    "reporting.md": "Say go and I'll",
+    "scope-gate.md": "just reply to the thread without a code change",
+    "checkout.md": "## The Jira transition (Step 6, with the checkout)",
+    "fixing.md": "## Reading `attribute_staged_hunks`' output",
+    "summary-gate.md": "Approve those Jira updates?",
+    "publishing.md": "## The pre-push hook decision — presentation and follow-through",
+    "jira.md": "## What the re-read tells you — five branches",
+    "lessons.md": "## What earns an entry",
+    "conflicts.md": "## The plan gate — the template",
+  };
+
+  for (const [name, marker] of Object.entries(owners)) {
+    const own = refs.find((r) => r.name === name);
+    truthy(`step-ownership: references/${name} still exists`, own !== undefined);
+    truthy(
+      `step-ownership: ${name} still holds the procedure its index row promises`,
+      (own?.text ?? "").includes(marker),
+    );
+    eq(
+      `step-ownership: no other reference carries ${name}'s procedure`,
+      refs.filter((r) => r.name !== name && r.text.includes(marker)).map((r) => r.name),
+      [],
+    );
+  }
+
+  // Every reference either owns a step above or is one of the four cross-cutting files.
+  // A new reference that is neither is unreachable-by-design or an unowned step, and the
+  // author should have to say which.
+  const crossCutting = ["failures.md", "batching.md", "user-mistakes.md", "glab-tooling.md"];
+  const unclassified = refs
+    .map((r) => r.name)
+    .filter((n) => !(n in owners) && !crossCutting.includes(n));
+  eq("step-ownership: every reference is either step-owning or declared cross-cutting", unclassified, []);
 }
 
 /**
@@ -647,26 +714,26 @@ function testWorkflowPolicyContracts() {
  * fix, and a skipped thread is not a resolved one.
  */
 function assertJiraCommentWiring(docs, m) {
-  const { skill, reporting, refs } = docs;
+  const { skill, summaryGate, refs } = docs;
   const { jiraFinish, timeAsk, lessons } = m;
   const jira = refs.find((r) => r.name === "jira.md")?.text ?? "";
 
   // Authorized at Step 8, with the transition, as one question with two answers.
   truthy(
     "jira-comment: Step 8's block proposes the comment alongside the transition",
-    reporting.includes("and one short comment on the ticket naming what was addressed"),
+    summaryGate.includes("and one short comment on the ticket naming what was addressed"),
   );
   truthy(
     "jira-comment: and asks once, covering both",
-    reporting.includes("Approve those Jira updates? (yes / leave Jira alone)"),
+    summaryGate.includes("Approve those Jira updates? (yes / leave Jira alone)"),
   );
   truthy(
     "jira-comment: the no-transition branch still offers the comment",
-    reporting.includes("and post one short comment naming what was addressed"),
+    summaryGate.includes("and post one short comment naming what was addressed"),
   );
   truthy(
-    "jira-comment: reporting.md records why it shares the transition's gate",
-    reporting.includes("**The comment rides with the transition rather than getting its own gate.**"),
+    "jira-comment: summary-gate.md records why it shares the transition's gate",
+    summaryGate.includes("**The comment rides with the transition rather than getting its own gate.**"),
   );
 
   // Resident: the write batch names it, and points at the reference for the content rules.
@@ -725,7 +792,7 @@ function assertJiraCommentWiring(docs, m) {
   );
   truthy(
     "jira-reads: Step 8 calls transitions only, not a second re-read",
-    reporting.includes("**that one call, not a re-read as well**"),
+    docs.summaryGate.includes("**that one call, not a re-read as well**"),
   );
   falsy(
     "jira-reads: the phrasing a run misread as 'after they reply' is gone",
@@ -833,7 +900,10 @@ function assertCorpusPhrases(corpus) {
     "Which power or skill you activated",
     "Checks that passed — host is GitLab, tree is clean",
     "A different current branch than `source_branch` is normal, not an alarm",
-    "Output discipline",
+    // Was pinned on the Quick Reference row titled "Output discipline". That row was a
+    // paraphrase of "Internal discovery is not a user-facing report" and went with the rest
+    // of the duplicated table; this points at the clause that carries the rule.
+    "go quiet until Step 8's summary",
     "Step 3 — Verify the Jira Ticket (silent; no writes, no gate)",
     "Ticket identity for Jira lifecycle synchronization",
     "git merge --ff-only",
@@ -881,7 +951,8 @@ function assertCorpusPhrases(corpus) {
     "How much time should I log against it?",
     "**Never infer the duration**",
     "Ask even when earlier stages failed",
-    "Time log (last)",
+    // Same: was the "Time log (last)" row title. The rule lives in Step 11's own section.
+    "Ask for time spent, then make every Jira write in one turn",
     "Call `getJiraIssue` again immediately before automated writes",
     "exact review target approved in Step 8",
     "worklog and status transition are independent approvals",
@@ -974,7 +1045,9 @@ function assertCorpusPhrases(corpus) {
     "**`reconciles: null`**",
     "attribute_staged_hunks",
     "Only list a file in `formatter_files` if the formatter said it changed that file",
-    'is not "attribution done"',
+    // The rule is resident in Step 7; the deleted Quick Reference row phrased it "is not",
+    // the prose phrases it "as". Same rule, so the pin moves to the surviving wording.
+    'as "attribution done."',
     // The template must use the tool's own field names. `threadsTotal` is the raw
     // payload length — on MR !508 that was 5 against 3 real threads, because GitLab
     // returns "requested review from @x" as a discussion.
@@ -1397,15 +1470,16 @@ function assertPublishOrdering(docs, m) {
       replies < jiraFinish,
   );
 
-  // Step 8's template moved to references/reporting.md, but the independence rule
+  // Step 8's template lives in references/summary-gate.md, but the independence rule
   // stays resident in SKILL.md: it decides what a "yes" authorizes.
-  const noDirectReview = reporting.indexOf("If no direct review transition exists:");
-  const leaveManual = reporting.indexOf("Confirm leave unchanged/manual?", noDirectReview);
+  const { summaryGate } = docs;
+  const noDirectReview = summaryGate.indexOf("If no direct review transition exists:");
+  const leaveManual = summaryGate.indexOf("Confirm leave unchanged/manual?", noDirectReview);
   truthy(
     "workflow: Step 8 renders and gates both reachable and unreachable Jira review outcomes before commit",
     noDirectReview > 0 &&
       leaveManual > noDirectReview &&
-      reporting.includes("**Jira approval is independent from commit approval and time logging.**") &&
+      summaryGate.includes("**Jira approval is independent from commit approval and time logging.**") &&
       skill.slice(approval, commit).includes("commit, Jira transition, and — later — the worklog"),
   );
 
@@ -2084,8 +2158,8 @@ function testKeywordParity() {
  * back into a completed-result shape.
  */
 function testSelfReviewTemplateShape() {
-  // The card lives in references/reporting.md, so the assertion follows it.
-  const skill = loadSkillCorpus().refs.find((r) => r.name === "reporting.md")?.text ?? "";
+  // The Step 8 card lives in references/summary-gate.md, so the assertion follows it.
+  const skill = loadSkillCorpus().refs.find((r) => r.name === "summary-gate.md")?.text ?? "";
 
   const bulletMarker = "{Found `{path}`";
   const bulletStart = skill.indexOf(bulletMarker);

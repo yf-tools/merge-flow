@@ -16,6 +16,20 @@ Do not treat `Exit Code: 0` as confirmation of content. The commit succeeding te
 
 **Format the options as a real markdown list, each on its own line.** Do not put them in a blockquote and do not run them together in a paragraph — consecutive lines inside a blockquote collapse into one line when rendered, which makes a three-way choice unreadable at exactly the moment the user has to decide something.
 
+The shape, and note it is a plain list rather than a quote for exactly the reason above:
+
+```text
+Committed. Now the push — this repo's pre-push hook runs `{command}`, which lints and builds all {n} projects ({list them}). Expect several minutes.
+
+**How do you want to handle it?**
+
+* **(a) Run it here** — safest, identical to CI; I'll set a 30-minute timeout
+* **(b) Give me the command** — you run it in your own terminal, useful if you want the machine back
+* **(c) Skip with `--no-verify`** — reasonable if CI runs the same checks
+```
+
+Then wait. **Never choose (c) yourself** — a hook exists because someone wanted it enforced. If the user picks it, that is a legitimate private execution choice: **never write or disclose it** in any remote text, MR or Jira.
+
 **Present (a) as the default it is, and raise your timeout to fit it.** Pass an explicit `timeout` of 30 minutes on the push command rather than relying on the default. Measured on a 6-project Angular monorepo, the full hook — six lints plus six production builds — finished in about nine minutes and pushed cleanly. Do not tell the user (a) "will probably time out": it is a guess, it is usually wrong, and it pushes them toward `--no-verify` on a false premise. Give a duration estimate, note that you have set a long timeout, and let them weigh it.
 
 **If (a) does time out, that is information, not a verdict.** Report where the hook got to, confirm the real state (`git status -sb`, `git log --oneline -1`), and re-offer (b) and (c). Never escalate on your own.

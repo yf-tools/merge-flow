@@ -8,10 +8,13 @@ Every item below carries the measurement or the observation behind it, so none o
 to be re-derived to be acted on. Where a number is quoted, it was measured rather than
 estimated.
 
-Last reviewed: after the `branch-mismatch` triage check. Suite at **970 assertions**, tsc
-clean. `SKILL.md` is at 669 lines against a 700-line ratchet, and every reference is inside
-the 23,000-byte read-whole limit — `reporting.md` only after a third trim in one session,
-which is what turns Pass A in item 3 from tidying into the next thing to do.
+Last reviewed: three moves into the router restructure (item 3). Suite at **978 assertions**,
+tsc clean. `SKILL.md` is **84,914 chars / ~19,747 tok / 636 lines**, down from 24,897 tok at
+the start of the session, and the resident share is **33.8%** against 41.3%. Every reference
+is inside the 23,000-byte read-whole limit.
+
+`node dev/measure.mjs` prints the per-section and per-file map these numbers come from. Use
+it before and after every move rather than estimating; `--json` diffs cleanly across one.
 
 ---
 
@@ -61,7 +64,7 @@ block. It should say explicitly not to paste code or reviewer names.
 
 A script that reads a Kiro session folder (`sess_<uuid>/` with `messages.jsonl` and
 `session.json`, which appears in the workspace root during a session) and emits only the
-*shape* of the run: step order, timings, gates hit or skipped, tool-call count, which
+_shape_ of the run: step order, timings, gates hit or skipped, tool-call count, which
 references were read. No code, no comments, no names.
 
 **Why shape and not a transcript.** Every rule in `references/failures.md` was derived from
@@ -84,12 +87,12 @@ behind an explicit flag, with the tester deciding case by case.
 The reference point is Kiro's own `angular-developer` skill, which uses the shape this
 project has been approaching. Measured side by side:
 
-| | angular-developer | this power |
-| --- | --- | --- |
-| `SKILL.md` | 10,493 chars / **2,457 tok** | 107,056 chars / **25,072 tok** |
-| references | 39 files / 148,066 chars | 10 files / 152,278 chars |
-| **resident share** | **6.6%** | **41.3%** |
-| reference size | 37 of 39 under 8 KB | 3 files over 21 KB |
+|                    | angular-developer            | this power                     |
+| ------------------ | ---------------------------- | ------------------------------ |
+| `SKILL.md`         | 10,493 chars / **2,457 tok** | 107,056 chars / **25,072 tok** |
+| references         | 39 files / 148,066 chars     | 10 files / 152,278 chars       |
+| **resident share** | **6.6%**                     | **41.3%**                      |
+| reference size     | 37 of 39 under 8 KB          | 3 files over 21 KB             |
 
 Comparable total corpus, six times the resident share.
 
@@ -102,29 +105,151 @@ the report gate does damage — which is why the disclosure test exists at all.
 required-resident and they are almost all single headings or one-sentence rules: roughly
 **600 tokens of anchors**. Everything else resident today is elaboration wrapped around them.
 
-### Pass A — split the three oversized references by step
+### The governing rule, established by three moves that worked
 
-Mechanical, low risk, and it fixes a recurring problem rather than only saving tokens.
+**Resident keeps the verdict. References keep the reasoning.**
 
-| Reference | bytes | Steps it currently serves |
-| --------- | ----- | ------------------------- |
-| `investigating.md` | 22,542 | 1, 2, 3, 4 |
-| `reporting.md` | 22,240 | 5, 6b **and** 8 |
-| `jira.md` | 20,701 | 3 **and** 11 |
+This is the conflict-lane lesson generalised, and it is the only rule needed to decide any
+individual move. A hard stop's _existence_ stays resident always, because the disclosure
+finding is that a rule reachable only through a reference gets skipped. Its template, its
+rationale and its worked examples go to a file.
 
-A run at Step 8 reloads Step 5's template; a run at Step 11 reloads Step 3's identity rules.
-This is also why the 23,000-byte read-whole limit keeps getting hit — **`reporting.md` hit it
-three times in one session**, and the third trim was the marker table's alignment padding,
-which is to say the content itself no longer has slack. It serves three steps, so it is the
-file to split first. Splitting by step removes the ceiling permanently.
+**Two things make this far safer than it looked, both discovered by reading the suite:**
 
-**Round trips do not get worse, provided reads stay batched:** two small files in one turn
-costs the same as one big file in one turn. That condition is the thing to keep an eye on —
-the batching rule in SKILL.md is what makes the split free rather than expensive.
+1. **`assertCorpusPhrases` checks SKILL.md _and_ its references together.** Its own comment
+   says it exists so moving prose into a reference doesn't drop its assertion. So the large
+   majority of assertions do not resist a move at all.
+2. **22 strings are pinned to `skill` alone** — the invariants, the thirteen rules, the
+   uncovered-case protocol, Step 0b, every `(BLOCKING)` headline, the batch plan, the prose
+   rules, Step 13. That list _is_ the must-stay-resident boundary, already written down.
+
+**The procedure that made each move evidence-driven rather than a judgement call:** splice the
+content out, run the suite, and let the failures name what was uniquely there. It worked three
+times out of three. On the Quick Reference it surfaced 3 rows carrying something not written
+elsewhere; on the batch plan it caught 4 places where my paraphrase had drifted from a pinned
+sentence. **Every failure gets re-pointed at the surviving text, never deleted** — deleting is
+how a restructure silently removes the thing that catches a skipped gate.
+
+### Pass A — DONE, and it was two splits rather than three
+
+**The original plan here was wrong about which files needed splitting.** The test is not size, it
+is whether a file's sections are read in *different batches*. Measured per-section:
+
+| Reference | was | split? | why |
+| --- | --- | --- | --- |
+| `reporting.md` | 22,002 | **yes → 3** | Step 5 (batch 1), 6b (after batch 4), 8 (Step 7's batch) |
+| `jira.md` | 20,569 | **yes → 2** | Step 3 (batch 1) and Step 11 (the last thing the run does) |
+| `investigating.md` | 22,368 | **no** | Steps 1–4 are *all* batch 1 — splitting turns one read into four in the same turn, which is strictly worse |
+| `fixing.md` | 21,256 | **no** | almost entirely Step 7 already |
+
+Ten references became fifteen, and **both ceiling-hitters are gone**: `reporting.md` 22,002 →
+12,221, `jira.md` 20,569 → 12,529. New files are `scope-gate.md` (3,271), `summary-gate.md`
+(7,626) and `jira-identity.md` (8,568).
+
+**`jira.md` kept its name and Step 11 kept the file.** Its header already said "Step 11 in full"
+and nearly every `jira.includes(...)` assertion targeted Step 11 content, so Step 3 moved out
+instead — and that split needed **zero** assertion changes. Splitting the other way round would
+have needed seven. Check which direction is cheaper before splitting anything else.
+
+**One duplicated rule vanished for free.** `reporting.md`'s header restated the blank-line
+formatting rule, which is already resident in SKILL.md's "Formatting every report to the user" as
+rule 1. Splitting would have copied it into three files, so it was deleted and each new file
+points at the resident version instead.
+
+**Round trips did not get worse**, because two small files in one turn cost the same as one big
+file in one turn. That is the condition to keep watching, and it is why every new file's header
+states which batch it belongs to.
+
+### A routing bug Pass A surfaced, now fixed
+
+The per-section map showed **`fixing.md` holding the Step 6 Jira transition procedure**, under an
+umbrella heading, while the index row for `checkout.md` claimed that content. `checkout.md` did
+not contain `transitionJiraIssue` at all.
+
+So a run at Step 6 read `checkout.md` in batch 3 and would not find the procedure. It appeared
+only later in `fixing.md`, which is read at Step 7 — *after* the transition should already have
+happened. The index row was not merely stale, it was false, and the sequence was unrunnable as
+written. Moved into `checkout.md` between the checkout and the per-thread reads, which is the
+order Step 6 actually runs in: check out, move the board, then read the code.
+
+**This is the argument for per-step files beyond token count.** A big topic file hides a misfiled
+procedure; a per-step layout makes "why is Step 6 content in Step 7's file" visible on a section
+map. **Nothing in the 990-assertion suite caught it**, because every phrase involved is pinned
+corpus-wide and all of them were present — just in the wrong file.
+
+### `assertStepOwnership` — the blind spot, now closed
+
+That gap is a class of bug, not one instance, so it got a guard rather than a note.
+`assertStepOwnership` holds one distinctive procedure marker per step-owning reference and
+asserts it is **present in that file and absent from every other**. The uniqueness half is the
+part that catches misfiling: a marker in two references means either a duplicated procedure
+(invariant 4) or one copy in the wrong place, and both need a human look.
+
+**Verified by sabotage in both directions, not by assuming it runs.** Re-adding the Step 6
+transition heading to `fixing.md` fires *"no other reference carries checkout.md's procedure"*;
+renaming it out of `checkout.md` fires *"checkout.md still holds the procedure its index row
+promises"*. Both restored, suite green at 1,024.
+
+It also asserts every reference is either step-owning or one of four declared cross-cutting files
+(`failures.md`, `batching.md`, `user-mistakes.md`, `glab-tooling.md`), so a new reference that is
+neither has to be classified deliberately rather than drifting in unowned.
+
+**Two cheaper approaches were tried first and both failed on false positives.** Comparing step
+numbers in a file's headings against the steps its index row names flags `failures.md` (*"The Step
+11 re-read skipped because no transition was needed"* — an evidence entry, not a procedure) and
+`jira-identity.md` (*"Why the transition question defers to Step 6"* — Step 3 explaining a
+deferral). Heading text cannot distinguish *mentions* step N from *is* step N's procedure. A
+hand-picked marker per file can, and costs one line each.
+
+**Known limit:** the marker table is hand-maintained, so it catches a procedure that moved and a
+procedure that got duplicated, but not a step whose procedure was never written down anywhere.
+
+**Remaining `near` files, all legitimately single-purpose:** `investigating.md` 22,368 (632 bytes
+of headroom, now the tightest thing in the repo), `failures.md` 20,466, `fixing.md` 19,974.
 
 ### Pass B — thin `SKILL.md` toward the floor
 
-Target roughly **8,000–10,000 tokens**, about 16% resident. From 25,072, so ~60%.
+Target roughly **8,000–10,000 tokens**, about 16% resident. From 24,897, so ~60%.
+
+**Three moves are done, worth 5,150 tokens (21%):**
+
+| Section                      | before | after     | went to                                                          |
+| ---------------------------- | ------ | --------- | ---------------------------------------------------------------- |
+| Quick Reference              | 4,390  | **719**   | deleted as invariant-4 duplication; 4 unique rows kept           |
+| Four batches                 | 2,300  | **1,606** | `references/batching.md`                                         |
+| Mistakes a user can hand you | 1,529  | **689**   | `references/user-mistakes.md`                                    |
+| Step 9 — Commit and Push     | 747    | **550**   | option template → `publishing.md`; two paragraphs were duplicate |
+| Step 11 — time question      | 706    | **~500**  | four paragraphs deleted, all already in `jira.md`                |
+
+**A pattern worth naming, since it held on four of five moves.** The biggest wins came from
+looking for the same rule stated twice, not from relocating unique prose. Quick Reference, Step 9
+and Step 11 were all mostly duplication of something already resident or already in the reference
+a run reads at that step. Check for a second copy before planning a move: deleting is cheaper than
+relocating and carries no reachability risk.
+
+**Step 9's move also fixed a contradiction.** The resident three-option template was rendered
+*inside a blockquote*, immediately after the instruction saying never to use a blockquote because
+it collapses the options into one unreadable line. `publishing.md` carried the same prohibition.
+An agent copying the shape would have broken the rule it was illustrating. The template now sits
+in `publishing.md` as a ```text fence, matching every other template in the corpus.
+
+The Quick Reference is the one to understand before doing more. It was not a cheat sheet to
+relocate — it was the whole workflow written a second time, which is invariant 4 at the largest
+scale in the project (item 4 said exactly this). So 36 of 40 rows were **deleted**, not moved: a
+second paraphrase of resident prose is the drift risk, not a safety net. What stayed is only
+what is written nowhere else — the report skeleton (which labels itself "if you somehow have
+only this row", and is the fallback item 4 was protecting), the stop list, and the two `Never`
+aggregations that collect rules spread across a dozen steps. **Item 4 is now closed by this.**
+
+**What's left, and why the easy wins are gone.** The two biggest remaining sections resist:
+`One report, then the work` (1,753) is almost entirely pinned rule sentences, so only ~440
+tokens of it are movable and not worth the risk; `The thirteen rules` (1,300) is the gate list
+itself. The remaining bulk is the long tail — roughly fourteen per-step sections averaging ~400
+tokens, about 5,600 total. That is Pass A's real payoff: per-step reference files give each of
+those bodies somewhere precise to go, leaving a heading, a gate declaration and a pointer.
+
+So the order inverts from what this file originally said: **Pass A is no longer optional
+plumbing, it is the prerequisite for the rest of Pass B.**
 
 Reasoning from the project's own principle (resident = decides whether the run stops), what
 has to stay: the four-batch execution plan (~2,316, needed before anything else can be
@@ -134,10 +259,12 @@ the reference index itself (783), the uncovered-case protocol (622), output disc
 `publishing.md` loads at Step 9), each gate's headline and stop property (~800), and Step
 13's stop list (252).
 
-The large movable pieces are the Quick Reference (4,382 — but see item 4 first, it is a
-deliberate fallback), "Mistakes a user can hand you" (1,539 — a catalogue whose entries each
-name the step that handles them), the report's *rationale* as distinct from its gate
-declaration (1,766), and the per-step bodies beyond their declarations (~6,000).
+Of the pieces originally listed as movable, three are done (see the table above) and the
+estimates held up well: Quick Reference 4,382 estimated / 3,671 delivered, Mistakes 1,539 /
+840, batch plan 2,300 / 694. **The remaining one is the big one: the per-step bodies beyond
+their declarations, ~5,600 across roughly fourteen sections.** The report's _rationale_ was
+also on that list at 1,766, but reading it closely showed only ~440 tokens of it are anything
+other than pinned rule sentences, so it is not worth the risk of touching.
 
 **Do Pass B after a live run on Pass A, not together.** The failure mode of moving content
 out of resident is a rule quietly stopping being followed, and only a live run detects that.
@@ -145,23 +272,38 @@ Two passes with a run between them means a regression is attributable.
 
 ---
 
-## 4. Pin the Quick Reference to its prose
+## ~~4. Pin the Quick Reference to its prose~~ — CLOSED, see Pass B in item 3
 
-`## Quick Reference` in `SKILL.md` is **4,331 tokens, 17.18% of the file**, and only **2 of
-its 40 rows** are pinned by any test assertion.
+Kept for the reasoning, since the conclusion inverted. The plan was to pin the table's 40 rows
+to their prose so the two couldn't drift. The measurement that motivated it — 38 of 40 rows
+under 20% shingle overlap with the prose, only 2 rows test-pinned — turned out to be the
+argument for **deleting** the rows rather than pinning them: a paraphrase you have to keep in
+sync with its original is a maintenance cost that buys nothing the original doesn't already
+give. Pinning 40 rows would have locked in the duplication and made every future edit touch two
+places. The four rows that survived are the ones with no original to drift from.
 
-It is not a copy of the prose above it, which was measured: 38 of 40 rows sit under 20%
-shingle overlap and none reaches 50%. It is a *paraphrase*, which is worse for drift than a
-copy would be. The table and the prose can come to disagree about what a step requires and
-nothing would catch it. That is invariant 4's failure mode, at the largest scale in the
-project.
+The concern behind the item was real and is still honoured: the report skeleton stayed resident,
+because that is the row a run actually fell back on.
 
-The suite already does this kind of check for POWER.md against `plugin.json` keywords, and
-for the three `scrubSecrets` copies. The table never got it.
+<details>
+<summary>Original item, for the record</summary>
 
-**Do not simply delete the table.** The redundancy is deliberate: the report skeleton was
-put there precisely because a run skipped `reporting.md` and improvised. The question worth
+`## Quick Reference` in `SKILL.md` was **4,331 tokens, 17.18% of the file**, and only **2 of
+its 40 rows** were pinned by any test assertion.
+
+It was not a copy of the prose above it, which was measured: 38 of 40 rows sat under 20%
+shingle overlap and none reached 50%. It was a _paraphrase_, which is worse for drift than a
+copy would be. The table and the prose could come to disagree about what a step requires and
+nothing would catch it. That is invariant 4's failure mode, at the largest scale in the project.
+
+The suite already does this kind of check for POWER.md against `plugin.json` keywords, and for
+the three `scrubSecrets` copies. The table never got it.
+
+**Do not simply delete the table.** The redundancy is deliberate: the report skeleton was put
+there precisely because a run skipped `reporting.md` and improvised. The question worth
 answering is which rows are load-bearing fallbacks and which are a second copy.
+
+</details>
 
 ---
 
@@ -227,14 +369,24 @@ back around as if it were new.
   caught was advisory while the bugs that shipped were caught by the suite. It stays an
   occasional audit. When a rule earns its keep, move it into the suite as
   `testInputRobustness` did.
-- **Shrinking `SKILL.md` by deleting the Quick Reference, or by stripping the run
-  citations.** Both were checked and both failed. The Quick Reference is not duplicated text
-  (item 4). The 15% of the file that cites specific runs (15,969 characters over 28 lines)
-  has the evidence welded into each rule one clause at a time, so cutting it means rewriting
-  the rules. Note this does **not** close relocating step-local detail — the conflict lane
-  was exactly that and it landed (see Done), it just returned half what was projected. The
-  earlier compression pass already landed too: `investigating.md` went 33,475 →
-  22,542, the references were extracted, `failures.md` was separated.
+- **Stripping the run citations to shrink `SKILL.md`.** Still closed. The 15% of the file that
+  cites specific runs (15,969 characters over 28 lines) has the evidence welded into each rule
+  one clause at a time, so cutting it means rewriting the rules. The earlier compression pass
+  already landed too: `investigating.md` went 33,475 → 22,542, the references were extracted,
+  `failures.md` was separated. Note this does **not** close relocating step-local detail — the
+  conflict lane was exactly that and it landed (see Done).
+- **~~Deleting the Quick Reference to shrink `SKILL.md`.~~ This entry was wrong, and it was
+  acted on and reversed — see Pass B in item 3.** It was closed on the grounds that the table
+  "is not duplicated text," which conflated _not a verbatim copy_ with _not duplication_. It was
+  a paraphrase of the whole workflow, and being a paraphrase makes it **worse** for drift than a
+  copy: nothing can assert two paraphrases agree. 36 of 40 rows were deleted, the suite named the
+  3 rows that held anything unique, and resident dropped 3,671 tokens.
+
+  **The lesson worth keeping is about the test that closed it.** "Is this a copy?" was the wrong
+  question and the shingle-overlap measurement answered it faithfully. The right question is
+  "does this row have an original elsewhere?" — and if it does, the row is a liability whatever
+  its overlap score. Watch for the same error in the other direction before trusting any future
+  settled entry that rests on a similarity metric.
 - **Relocating step-local detail one section at a time, as a way to shrink `SKILL.md`.**
   This is the narrow version, and it is closed: of ~4,100 tokens of step-local detail, only
   the conflict lane's share saved a review-lane run anything, and **that one returned 441
@@ -276,7 +428,9 @@ back around as if it were new.
   before this gate closes", the dirty-tree one) were already in `conflicts.md` verbatim.
   **Estimated 1,125 tokens, delivered 441** — 670 lines from 699. The estimate treated both
   sections as fully relocatable when roughly half was gate declaration that has to stay
-  resident. Worth remembering before trusting the same arithmetic on the Quick Reference.
+  resident. That caution turned out not to generalise: the three router moves came in at 84%,
+  55% and 30% of estimate rather than 39%, because deleting duplication is predictable in a way
+  that relocating gate-adjacent prose is not.
 - **The Step 11 round trip.** `"Re-read the ticket immediately before any automated write"`
   was read by a live run as "after they reply", since the write does follow the answer. It
   asked the time question with nothing read behind it, spent a turn on the two reads, a
@@ -294,7 +448,7 @@ back around as if it were new.
   prose rule would have been the fourth copy of one that had just lost. The comparison moved
   into the tool instead — `triage_mr_payload` and `triage_graphql_mr` now accept
   `current_branch` and emit a `branch-mismatch` **flag, not a blocker**, since starting on the
-  wrong branch is normal and only *claiming* otherwise is the fault. An absent or empty branch
+  wrong branch is normal and only _claiming_ otherwise is the fault. An absent or empty branch
   reports `undetermined`, never "already checked out". Five files: `mr-payload.js` (the check
   and `facts.currentBranch`), `fetch-mr.mjs` (`localContext` now returns the branch),
   `server.js` (both schemas, both handlers), `reporting.md` (the row and closing item 1 read
@@ -307,3 +461,34 @@ back around as if it were new.
   `**that one call, not a re-read as well.**` with the period inside the bold, which the
   sentence cannot carry because it continues with a comma. The prose was right, the assertion
   was wrong, and it had been failing quietly behind the byte-limit failure.
+- **Router restructure, first three moves.** 24,897 → **19,747 tok**, 41.3% → **33.8%** resident,
+  670 → 636 lines, suite 970 → **978**. The rule that governs it and the evidence-driven
+  procedure behind it are in item 3; the per-move table is in Pass B. Two new references, both
+  under 8 KB and so inside the profile `angular-developer` keeps: `user-mistakes.md` (7,488) and
+  `batching.md` (6,585). **Item 4 closed as a by-product** — its own measurement turned out to
+  argue for deleting the duplication rather than pinning it.
+- **`dev/measure.mjs`.** Prints the per-section map of `SKILL.md` and the per-file map of
+  `references/`, with token estimates at chars/4.3 calibrated against the tokeniser figures
+  already in this file. `--json` for diffing across a move, `--refs`/`--sections` to narrow.
+  Written because the first two moves were planned against estimates and the estimates were
+  wrong in both directions; every number quoted above came out of this instead.
+- **A line ratchet measures the wrong thing during this work.** Converting the mistakes section
+  from bullets to a table _added_ 5 lines while removing 840 tokens, which took `SKILL.md` to 675
+  against the `< 700` ratchet with the restructure barely started. Pulling the Quick Reference
+  then returned 35 lines, so it self-resolved and the ratchet stayed untouched. **If it binds
+  again, the fix is a character ratchet set just above the achieved size and tightened per move,
+  not a raised line limit** — characters are what actually cost context, and the ratchet's stated
+  intent is to block regrowth, which a char limit does more honestly here.
+- **Pass A, the per-step reference split.** Detail in item 3. Ten references became fifteen, both
+  byte-ceiling files dropped to about 12 KB, and the split surfaced a routing bug that had made
+  the Step 6 Jira transition unreachable at Step 6. Suite 978 → **990**, all four splits verified
+  green with no rule lost. Resident share unchanged at 33.8%, which is expected: Pass A moves
+  content between references and buys correctness plus headroom, not resident tokens. It is the
+  prerequisite for the rest of Pass B, where the per-step bodies finally have somewhere to go.
+- **`assertStepOwnership`.** Closes the blind spot Pass A exposed: corpus-wide pinning proves a
+  rule exists, never that it is reachable at its step. One marker per step-owning reference,
+  asserted present in its own file and absent from every other. Sabotage-verified in both
+  directions. Detail and the two rejected approaches are in item 3. Suite 990 → **1,024**.
+- **Step 9 and Step 11's time question thinned.** 747 → 550 and 706 → ~500, almost entirely by
+  deleting paragraphs that already existed in `publishing.md` and `jira.md`. Step 9's move also
+  removed a template rendered in a blockquote directly beneath the rule forbidding blockquotes.

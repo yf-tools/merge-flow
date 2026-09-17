@@ -33,6 +33,17 @@ If fast-forward fails, stop and show ahead/behind state. Never start a merge or 
 
 **The Jira transition rides in this same turn**, when Step 5's line was approved. The call, the read-back, and what to do when either fails are in the Step 7 procedure file, under the Jira transition heading.
 
+## The Jira transition (Step 6, with the checkout)
+
+This is the moment the board's claim becomes true — work is starting now, so the status changes now. It happens in **Step 6, batched with the checkout and before any code is read**, and only if the user approved item 2 of Step 5's closing list.
+
+1. Call `transitionJiraIssue` with the exact transition recorded in Step 3.
+2. Confirm the resulting `status.name` is exactly the approved target. A successful API response is not evidence on its own — but **when the transition response itself names the resulting status, that _is_ the read-back**; re-read only when it doesn't.
+3. **If the transition or the verification fails, stop.** Report the exact error, and wait for the user to either apply it manually and confirm the resulting status, or tell you to proceed without it. Do not start editing on the assumption it worked, and do not retry through a different transition. There is no fail-open synchronization waiver.
+4. If the user declined, or chose "leave it", record that and move on. Say nothing further about it — they already decided.
+
+Then say nothing more about Jira until Step 8. One line confirming the move is acceptable if it happened; a paragraph is not.
+
 ## Then read what each thread points at
 
 **This is batch 4.** Every read in one turn of parallel calls; only serialize when two threads name the same file, and then read it once and reuse it. Do it yourself with plain tool calls — **don't dispatch sub-agents:** a batch of parallel `read_code`/`grep_search` calls already gets you the speed, and a sub-agent adds coordination without doing the work faster. **No edits in this step.**

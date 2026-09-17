@@ -121,19 +121,6 @@ Never let this pass stay invisible. In the Step 8 summary, state:
 
 ---
 
-## The two halves of Step 7 that come before validation
-
-## The Jira transition (Step 6, with the checkout)
-
-This is the moment the board's claim becomes true — work is starting now, so the status changes now. It happens in **Step 6, batched with the checkout and before any code is read**, and only if the user approved item 2 of Step 5's closing list.
-
-1. Call `transitionJiraIssue` with the exact transition recorded in Step 3.
-2. Confirm the resulting `status.name` is exactly the approved target. A successful API response is not evidence on its own — but **when the transition response itself names the resulting status, that _is_ the read-back**; re-read only when it doesn't.
-3. **If the transition or the verification fails, stop.** Report the exact error, and wait for the user to either apply it manually and confirm the resulting status, or tell you to proceed without it. Do not start editing on the assumption it worked, and do not retry through a different transition. There is no fail-open synchronization waiver.
-4. If the user declined, or chose "leave it", record that and move on. Say nothing further about it — they already decided.
-
-Then say nothing more about Jira until Step 8. One line confirming the move is acceptable if it happened; a paragraph is not.
-
 ## Then the fixes (Step 7)
 
 **This is the one place in the workflow not to parallelize or delegate, even though Step 6's reads just were.** Investigation is read-only and forgiving of speed; writing isn't. A sub-agent editing a file at the same time you edit a different one is indistinguishable, from `git diff --cached`'s point of view, from the user editing that file while you work — and the entire hunk-attribution mechanism exists to catch exactly that shape of problem. Parallel edits from your own dispatched agents would trip your own trap. Apply fixes one at a time, in this process, even when several are independent enough that they _could_ run concurrently.
