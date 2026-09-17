@@ -127,7 +127,7 @@ const TOOLS = [
     description:
       "Absolute paths to this power's bundled scripts, for running them from a working directory that is the user's repository rather than this power. " +
       `ON THIS INSTALL THEY ARE ALREADY RESOLVED, so you do not need to call this tool: fetch-mr.mjs is ${scriptCommand("fetch-mr.mjs")} and git-context.mjs is ${scriptCommand("git-context.mjs")}. ` +
-      "Both strings are quoted for a path containing spaces and can be used verbatim as the start of a shell command. Do not verify them with `file_search` or `list_directory` first — run the command and let a missing-file error be the signal. " +
+      "Both strings are quoted for a path containing spaces and can be used verbatim as the start of a shell command. Run that command as one plain command: do not wrap it in `node -e`, `execSync`, or `bash -c` to reshape its output, because the nested quoting breaks on a Windows shell before the script ever runs. Do not verify them with `file_search` or `list_directory` first — run the command and let a missing-file error be the signal. " +
       "Call this tool only when one of those paths actually fails, which means a non-standard install. It takes no arguments and returns the same paths plus `powerRoot`.",
     inputSchema: { type: "object", properties: {} },
   },

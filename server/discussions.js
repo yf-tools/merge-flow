@@ -130,6 +130,44 @@ export function slimThreadsForReport(discussions, excerptAt = 160) {
   return { threads, omitted };
 }
 
+/**
+ * One compact row per feedback thread, no bodies: id, resolve state, path, line, note
+ * count, last author. Backs `--brief` — three runs hand-computed exactly this by
+ * wrapping `fetch-mr.mjs` in a script instead, so it is emitted pre-computed instead.
+ * Resolution comes from `threadState`, never re-derived, so it can't drift from
+ * `slimThreadsForReport` or the counter.
+ *
+ * @param {Array<object>} discussions Unfiltered `.../discussions` entries.
+ */
+export function indexThreadsForReport(discussions) {
+  if (!Array.isArray(discussions)) throw new TypeError("discussions must be an array of discussion objects");
+
+  const rows = [];
+
+  for (const d of discussions) {
+    const { feedback, resolvable, resolved } = threadState(Array.isArray(d?.notes) ? d.notes : []);
+
+    // Same exclusion as the slimmer: a thread holding only system notes is activity log,
+    // not feedback, and counting it here would disagree with `feedbackThreads`.
+    if (feedback.length === 0) continue;
+
+    const position = feedback.find((n) => n?.position)?.position ?? null;
+    const last = feedback[feedback.length - 1];
+
+    rows.push({
+      id: d?.id ?? null,
+      resolvable,
+      resolved,
+      path: position?.new_path ?? position?.old_path ?? null,
+      line: position?.new_line ?? position?.old_line ?? null,
+      notes: feedback.length,
+      lastAuthor: last?.author?.username ?? null,
+    });
+  }
+
+  return rows;
+}
+
 /** The `reconciles ✓` / `MISMATCH …` / `not reconciled …` tail of `countLine`. */
 function reconciliationTick(reconciles, userNotesCount) {
   if (reconciles === true) return "reconciles ✓";

@@ -275,7 +275,7 @@ function checkConflicts(facts, blockers) {
   pushIssue(
     blockers,
     "conflicts",
-    `This MR cannot merge as it stands (has_conflicts=${hasConflicts}, merge_status=${mergeStatus}, detailed_merge_status=${detailedMergeStatus}). Ask whether to resolve the conflict first or triage the comments and leave it.`,
+    `This MR cannot merge as it stands — has_conflicts=${hasConflicts}, merge_status=${mergeStatus}, detailed_merge_status=${detailedMergeStatus}.`,
     { hasConflicts, mergeStatus, detailedMergeStatus },
   );
 }

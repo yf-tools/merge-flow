@@ -23,22 +23,26 @@ This is the run's **only** pre-work output and its only pre-work gate. Everythin
 
 - **State:** {state}, {mergeable / cannot merge — from detailed_merge_status} · **Target:** `{target_branch}`
 - **Ticket:** `{TICKET-KEY}` — **{exact current status}** · **Branch:** `{source_branch}` {— already checked out / — I'd switch from `{current branch}` / — I can't tell what's checked out}
-- **Blockers:** {one line per blocker message} — or `none`
-- **Flags:** {one line per non-blocking flag} — omit the row entirely when there are none
+- **Blockers:** 🔴 {one line per blocker message} — or `none`
+- **Flags:** 🚩 {one line per non-blocking flag} — omit the row entirely when there are none
 
 ---
 
-**1. ✅ Fix** · `{file}:{line}` · {🔴 blocker / 🟡 warning / 🔵 suggestion, as the reviewer framed it}
+**1. ✅ Fix** · `{file}:{line}` · {🔴 blocker / 🟡 warning / 🔵 suggestion}
 
-Reviewer ({author}): "{trimmed comment}"
+Reviewer ({author}):
+
+> {trimmed comment}
 
 → **What they're asking for:** {one sentence, read off the comment}
 
 ---
 
-**2. 💬 Question** · `{file}:{line}` · {severity}
+**2. 💬 Question** · `{file}:{line}`
 
-Reviewer ({author}): "{trimmed comment}"
+Reviewer ({author}):
+
+> {trimmed comment}
 
 → **What I need from you:** {the question, one sentence}
 
@@ -46,7 +50,9 @@ Reviewer ({author}): "{trimmed comment}"
 
 **3. ⚠️ Disagree** · _(general MR comment)_
 
-Reviewer ({author}): "{trimmed comment}"
+Reviewer ({author}):
+
+> {trimmed comment}
 
 → **Where I'd push back:** {one sentence}
 
@@ -61,6 +67,12 @@ Reviewer ({author}): "{trimmed comment}"
 
 Go ahead? {Say so if you'd rather leave Jira in **{current status}**, or if any classification above is wrong.}
 ```
+
+**Braces are slots. The words inside one tell you how to choose, and are never text to print.** A report that reached a user read `💬 question, as the reviewer framed it` on its item header, having copied the placeholder's guidance instead of picking a value from it. When a slot's options don't fit the item, leave the field out rather than emitting the guidance — the third field is the reviewer's own framing, so only ✅ Fix and 🔵 Nitpick items carry one, never 💬 Question or ⚠️ Disagree.
+
+**Quote the reviewer exactly, unescaped, trimmed, in the blockquote the template shows.** Unescape first — a backslash before a quote mark means the raw JSON got pasted rather than the string it encodes. Trim by dropping whole sentences down to the ones carrying the ask; never reword, never restyle straight quotes into typographic ones. Two real reports skipped this: one kept a four-paragraph comment whole and buried the question, the other changed the reviewer's own quote characters.
+
+**Multi-paragraph quotes join on a bare `>` line, no blank line either side.** A blank line ends a blockquote, so a lone `>` between blank lines renders as an empty quote wedged between two separate ones — one report produced that twice in a single item.
 
 **The `Branch` row and closing item 1 come from `triage.flags`, never from your own comparison.** A `branch-mismatch` flag means "I'd switch from `{current}`"; its absence with nothing in `undetermined` means "already checked out"; `branch` in `undetermined` means you cannot tell, so say that. **"Already checked out" is an invariant-1 claim that has been fabricated against evidence the run held**, costing nine reads on the wrong branch because a closing list with no checkout in it was executed faithfully.
 
@@ -101,8 +113,12 @@ These and no others. Emoji earn their place by sorting a long list at a glance; 
 | ✔️ | a fix already in the code. **A Step 6b finding or Step 10 reply, never a Step 5 item** — it takes a file read to know |
 | 🔴 🟡 | the reviewer's own severity, echoed as they framed it |
 | 🛑 | a hard stop |
+| 🔴 (Blockers row) | this MR cannot merge or proceed as-is |
+| 🚩 (Flags row) | worth knowing, nothing to act on |
 
-Never decorate a heading that already reads clearly, and never put a marker on the orientation rows, the count lines, the closing list, or the closing question. Those are read in sequence rather than scanned, so a marker there is noise.
+Never decorate a heading that already reads clearly, and never put a marker on the count lines, the closing list, or the closing question. Those are read in sequence rather than scanned, so a marker there is noise. The **Blockers** and **Flags** rows are the one exception, marked above — a reader scanning a long report for risk should not have to read every row to find the one that stops it.
+
+**Don't put an opening bracket immediately before a code span.** When you reformat a blocker message and wrap its fields, write `has_conflicts=true` after a comma or a dash rather than inside brackets. An observed renderer swallowed the `(` that sat directly before a backtick and left the stray `)` behind, twice in one report, while a bracket before plain text came through intact. The templates here avoid the pattern for the same reason.
 
 ### The header's arithmetic
 

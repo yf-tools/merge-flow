@@ -24,15 +24,10 @@
 // No @types/node by design, so a local handle keeps an editor quiet without adding a
 // package. Same pattern as server.js and both bundled scripts.
 const proc = /** @type {any} */ (globalThis).process;
-// @ts-ignore -- no @types/node by design
 import { spawnSync } from "node:child_process";
-// @ts-ignore -- no @types/node by design
 import { existsSync, readFileSync, statSync } from "node:fs";
-// @ts-ignore -- no @types/node by design
 import { homedir } from "node:os";
-// @ts-ignore -- no @types/node by design
 import { delimiter, dirname, isAbsolute, join } from "node:path";
-// @ts-ignore -- no @types/node by design
 import { fileURLToPath } from "node:url";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));

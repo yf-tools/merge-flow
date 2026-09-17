@@ -20,6 +20,13 @@
  * restores the old behaviour, and is the automatic fallback when the modules aren't
  * reachable.
  *
+ * **`--brief` swaps `discussions`/`omitted` for `threadIndex`** under `mode: "brief"`:
+ * one bodyless row per feedback thread — id, resolve state, path, line, note count,
+ * last author. Three runs wrapped this script in `node -e` to compute exactly those
+ * fields by hand instead, one of them writing its own file-capturing projector script
+ * that then corrupted the quotes in its report. For a triage-only read, not a cheaper
+ * batch 1 — Step 5 still needs bodies, which only the default output carries.
+ *
  * Needs `glab` on PATH and authenticated.
  */
 
@@ -60,7 +67,7 @@ const MR_QUERY = `query($fullPath: ID!, $iid: String!) {
 }`;
 
 const USAGE =
-  "usage: node scripts/fetch-mr.mjs --project <group/repo> --iid <n> [--instance <host>] [--note <id>] [--rest] [--raw]\n";
+  "usage: node scripts/fetch-mr.mjs --project <group/repo> --iid <n> [--instance <host>] [--note <id>] [--rest] [--raw] [--brief]\n";
 
 const argv = proc.argv.slice(2);
 const flag = (name) => {
@@ -73,7 +80,7 @@ const has = (name) => argv.includes(`--${name}`);
 // query whichever host `glab` is configured for by default, and iid 491 exists on more
 // than one GitLab — so the run would get a real merge request from the wrong server
 // and have no way to tell. Failing here is the only outcome that can't be mistaken.
-const KNOWN = new Set(["project", "iid", "instance", "note", "rest", "raw"]);
+const KNOWN = new Set(["project", "iid", "instance", "note", "rest", "raw", "brief"]);
 const unknown = argv.filter((a) => a.startsWith("--") && !KNOWN.has(a.slice(2)));
 if (unknown.length > 0) {
   proc.stderr.write(`unknown flag(s): ${unknown.join(", ")}\n${USAGE}`);
@@ -204,6 +211,7 @@ async function loadChecks() {
       triageMrPayload: payload.triageMrPayload,
       reconcileDiscussionCounts: discussions.reconcileDiscussionCounts,
       slimThreadsForReport: discussions.slimThreadsForReport,
+      indexThreadsForReport: discussions.indexThreadsForReport,
     };
   } catch (err) {
     // Absent is the expected, supported case. Present-but-broken is a bug, and
@@ -367,11 +375,15 @@ function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx }) {
     noteIdFromUrl,
   });
 
-  const slim = checks.slimThreadsForReport(discussions);
+  // `--brief` keeps the decision layer and drops the threads. `counts` above is computed
+  // from the unfiltered set either way, so a brief read reconciles identically to a full
+  // one — the number is never a function of what got printed.
+  const brief = has("brief");
+  const slim = brief ? null : checks.slimThreadsForReport(discussions);
 
   proc.stdout.write(
     JSON.stringify({
-      mode: "triaged",
+      mode: brief ? "brief" : "triaged",
       triage: checks.triageMrPayload({
         mr,
         workspaceRemote: ctx.remote,
@@ -380,8 +392,8 @@ function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx }) {
       }),
       counts: counts,
       mr,
-      discussions: slim.threads,
-      omitted: slim.omitted,
+      ...(brief ? { threadIndex: checks.indexThreadsForReport(discussions) } : {}),
+      ...(slim ? { discussions: slim.threads, omitted: slim.omitted } : {}),
       hasNextPage,
       endCursor,
     }) + "\n",

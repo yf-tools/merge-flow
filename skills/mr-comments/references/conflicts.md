@@ -75,7 +75,7 @@ Three decisions live in a conflict resolution, and **all three are the user's**:
 
 **Conflicted files:** {n} of {m} that differ on both sides — {list}
 
-| # | Region | Their side (`{target}`) | Your side (`{source}`) | Proposed |
+| # | Region | Their side — `{target}` | Your side — `{source}` | Proposed |
 |---|---|---|---|---|
 | 1 | `{file}:{line}` | {one line} | {one line} | {which, and why in ≤10 words} |
 
@@ -141,9 +141,9 @@ Each hit is one conflicted region; the file it belongs to is the nearest precedi
 
 **This section is the review lane, where a conflict arrives uninvited.** If the user came here *to* fix the conflict, you're in the conflict-first lane and the plan gate replaces the question below — the conflict is the subject of the run, so it doesn't occupy the Blockers row. Everything else here still applies.
 
-`has_conflicts: true` (usually alongside `merge_status: "cannot_be_merged"` and `detailed_merge_status: "conflict"`) means this MR cannot merge as it stands. **It is a blocker, so it goes on Step 5's report Blockers row and its question replaces the report's closing `Go ahead?`** — the report still renders in full. It is not a detail to bury below the items, and it is not something to notice later when a build fails.
+`has_conflicts: true` (usually alongside `merge_status: "cannot_be_merged"` and `detailed_merge_status: "conflict"`) means this MR cannot merge as it stands. **It is a blocker, so the Blockers row states the fact and nothing else, while its question replaces the report's closing `Go ahead?` and is asked there — once, at the end, never in the row as well** — the report still renders in full. It is not a detail to bury below the items, and it is not something to notice later when a build fails.
 
-> ⚠️ Conflicts against `develop` (`detailed_merge_status: conflict`) — it can't merge as-is. Do you want the conflict resolved first, or should I work through the review comments above and leave the conflict to you?
+> ⚠️ Conflicts against `develop`, `detailed_merge_status: conflict` — it can't merge as-is. Do you want the conflict resolved first, or should I work through the review comments above and leave the conflict to you?
 
 Then wait for that answer. Why it replaces the go-ahead rather than riding alongside it: resolving a conflict often rewrites the very code the review comments are about, so fixing first can mean work a merge then overwrites — and the order is the user's call. **If they choose "resolve first", the run switches to the conflict-first lane** — Step 0b's table tells you what changes. Either way that answer also releases batches 3 and 4, so don't ask for a go-ahead a second time.
 
