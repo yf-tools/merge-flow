@@ -74,8 +74,8 @@ A wrong project, terminal MR state, zero comments, incomplete pagination or unre
 
 ### Four batches, not fifteen turns
 
-- **Batch 1 (Concurrent):** Run `{scripts["fetch-mr.mjs"].run}` and `getAccessibleAtlassianResources()` together in one turn. The bundled fetch script already obtains authenticated GitLab identity through `glab auth status` and collects git state (`branch`, `remote`, `dirty`); do not run `glab api user --jq` to profile it because `glab` does not support that flag.
-- **Batch 2 (Concurrent):** **Known Jira key route:** use those direct reads; do not use `atlassian-mcp/search` or Rovo search for a known Jira key. Call `getJiraIssue` and `getTransitionsForJiraIssue` together in one turn when one key is settled:
+- **Batch 1 (Concurrent):** Run `{scripts["fetch-mr.mjs"].run}` and `getAccessibleAtlassianResources()` together in one turn. The bundled fetch script already obtains authenticated GitLab identity through `glab auth status` and collects git state (`branch`, `remote`, `dirty`); do not run the unsupported profile command `glab api user --jq .username`.
+- **Batch 2 (Concurrent):** **Known Jira key direct-read route:** when one key is settled, call `getJiraIssue` and `getTransitionsForJiraIssue` together in one turn. Do not use `atlassian-mcp/search`, Rovo, or any discovery search for that known Jira key:
   - `cloudId`: The resource `id` from Batch 1's `getAccessibleAtlassianResources` (**never the GitLab hostname**).
   - `issueIdOrKey`: `triage.facts.ticketKey` from Batch 1.
   - **CRITICAL:** Pass `fields: ["status", "summary"]` to `getJiraIssue`. Without `fields`, Jira returns hundreds of unneeded fields that overflow into `output.txt` and cost extra read turns.
@@ -127,18 +127,18 @@ Reviewer ({discussion.author}):
 
 **Say go and I'll:**
 
-1. {approval.checkout}
+1. {approval.checkout} — check out the MR source branch `{mr.sourceBranch}`.
 2. {approval.jiraStart}
-3. {approval.postCheckoutReads}
+3. {approval.postCheckoutReads} — implement only approved ✅ Fix / 🔵 Nitpick items; leave 💬 Question / ⚠️ Disagree items unresolved and outside this authorization.
 4. {approval.laterStop}
 
 {closing.defaultQuestion}
 {closing.blockerReplacement}
 ```
 
-The template's semantic roles are stable even when prose is reworded. `{counts.needsYou} + {counts.feedbackThreads}` must account for all feedback, and **Report `feedbackThreads`, never `threadsTotal`.** Use the tool's `countLine` verbatim. **Resolve state and `{counts.needsYou}` are not quite the same split.** A blocker question replaces the default question; it does not add a second question. A conflicted MR in the review lane uses the resident blocker question and leaves `references/conflicts.md` unloaded. If the user replies “resolve conflicts first”, that reply starts the later conflict-first lane.
+The template's semantic roles are stable even when prose is reworded. `{counts.needsYou} + {counts.feedbackThreads}` must account for all feedback, and **Report `feedbackThreads`, never `threadsTotal`.** Use the tool's `countLine` verbatim. **Resolve state and `{counts.needsYou}` are not quite the same split.** When `mr.draft` is true, render this visible non-blocking flag: `Draft MR — review may proceed, but it is not ready for merge completion.` A blocker question replaces the default question; it does not add a second question. A conflicted MR in the review lane uses the resident blocker question and leaves `references/conflicts.md` unloaded. If the user replies “resolve conflicts first”, that reply starts the later conflict-first lane.
 
-**What a bare “go ahead” covers: batches 3 and 4, the Jira transition the report named, and the ✅ Fix / 🔵 Nitpick items.** Question and Disagree items remain outside that authorization. Commits, pushes, replies, resolutions, Jira finish writes, worklogs and lesson writes remain gated. The Jira move is a line in that list, not a second question. **The stop is ending the turn, not announcing that you are about to.**
+**What a bare “go ahead” covers: batches 3 and 4, the Jira transition the report named, and implementation of the ✅ Fix / 🔵 Nitpick items.** 💬 Question / ⚠️ Disagree items remain unresolved and outside that authorization. Commits, pushes, replies, resolutions, Jira finish writes, worklogs and lesson writes remain gated. The Jira move is a line in that list, not a second question. **The stop is ending the turn, not announcing that you are about to.**
 
 ## Post-report index
 
@@ -146,7 +146,7 @@ The following cards are the only routes after Step 5. Each card states its bound
 
 ### Step 6 — Start Work: Checkout, Jira, Then the Code
 
-**Eligible after:** Step 5 approval. **Allowed scope:** approved checkout, listed Jira start transition, deferred profile reads and approved code reads; no commit or push. **Stop:** failed fast-forward, failed transition confirmation, or changed scope. **Procedure:** `references/checkout.md`.
+**Eligible after:** Step 5 approval. **Allowed scope:** approved checkout of the MR source branch, listed Jira start transition, deferred profile reads and approved code reads; no commit or push. **Stop:** failed MR source-branch checkout, failed transition confirmation, or changed scope. **Procedure:** `references/checkout.md`.
 
 ### Step 6b — When the picture changes (BLOCKING)
 

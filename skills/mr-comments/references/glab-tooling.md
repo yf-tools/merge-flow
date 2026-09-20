@@ -2,7 +2,7 @@
 
 Read this when a `glab` MCP call fails in a way you don't recognise, or before reaching for a `glab_mr_*` tool. Two reproducible failure modes, both of which cost turns every time they're rediscovered.
 
-The standing rules that come out of this — use `glab_api` rather than repo-scoped `glab_mr_*` tools, and pass `output: "ndjson"` on collection endpoints — are stated in SKILL.md's Quick Reference. This file is the reasoning and the exact error text.
+The standing rule for MR retrieval is stronger than an API preference: run the bundled `fetch-mr.mjs` script first and do not call any repo-scoped `glab_mr_*` MCP tool. If the script is unavailable or the user explicitly selects a fallback, use `glab_api` with an explicit encoded project path and pass `output: "ndjson"` on collection endpoints. This file is the reasoning and the exact error text.
 
 ## 1. Repo-scoped `glab` tools always fail
 
@@ -15,7 +15,9 @@ git: exit status 128.
 
 **This is not a short list of exceptions — it's every `mcp_gitlab_glab_mr_*` tool that acts on one specific MR.** Confirmed failing this way: `mr_view`, `mr_note`, `mr_diff`, `mr_approve`, `mr_issues`. Don't treat an unlisted name as safe just because it hasn't been hit yet — assume any `glab_mr_*` tool taking an MR id/branch fails the same git check, and reach for `glab_api` first rather than trying the dedicated tool and discovering the failure live. **`--repo` does not help**, not even host-qualified — the git check runs first.
 
-**Use `mcp_gitlab_glab_api` with an explicit encoded project path.** It needs no git context and covers every endpoint including POST and PUT.
+**The bundled script is the fix for the default fetch.** It runs from the user's repository, passes the project path and IID explicitly, and performs the GraphQL/REST request without repo-scoped MCP context. Do not retry the failed `glab_mr_*` call.
+
+**For an explicitly approved fallback, use `mcp_gitlab_glab_api` with an explicit encoded project path.** It needs no git context and covers every endpoint including POST and PUT.
 
 A root-cause fix exists but is deliberately not used here: setting `GITLAB_HOST` and `GITLAB_REPO` under `env` in a workspace-level `.kiro/settings/mcp.json` makes the repo-scoped tools work (verified). It's rejected because it pins one repo per config file, which defeats the point of a portable skill. `mcp_gitlab_glab_api` needs no setup anywhere. (`cwd` is not a supported `mcp.json` field, so that route doesn't exist.)
 

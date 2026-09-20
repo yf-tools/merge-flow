@@ -40,9 +40,11 @@ at them, so activation doesn't pay for Step 12 on a run that never reaches it.
 
 **It fetches the MR in one GraphQL call, not two REST calls.** Measured on a real
 merge request: 10,578 characters in one round trip against 27,984 in two — 62% less
-context, one fewer call, and it cannot truncate, because the size is set by the
-fields requested rather than by trimming whatever came back. That removes the paging
-failure the REST path hits on any MR with more than a handful of threads. GraphQL's
+context and one fewer call. GraphQL field selection keeps the response focused, but
+connection pagination can still make a fetch incomplete; the script exposes
+`hasNextPage` and the workflow refuses to report until all requested connections are
+complete. That avoids the paging failure the REST path hits on any MR with more than a
+handful of threads. GraphQL's
 global IDs are translated back to the REST ids that thread replies need, in tested
 code rather than in prose, because leaving one in place would 404 every reply at the
 very end of a run. If an instance doesn't offer GraphQL, the REST path is still there.

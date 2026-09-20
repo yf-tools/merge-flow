@@ -4381,7 +4381,7 @@ function eventError(id, events, detail) {
   return new Error(`${id}: ${detail}; events: ${sequence}`);
 }
 
-/** Return one named resident batch, so duplicate prose elsewhere cannot satisfy its route contract. */
+/** Return one named resident batch, so unrelated prose cannot satisfy its route contract. */
 function residentBatch(text, startMarker, endMarker, contractId) {
   const start = text.indexOf(startMarker);
   const end = text.indexOf(endMarker, start);
@@ -4393,12 +4393,49 @@ function residentBatch(text, startMarker, endMarker, contractId) {
 function validateKnownJiraDirectRoute(text) {
   const batch1 = residentBatch(text, "- **Batch 1 (Concurrent):**", "- **Batch 2 (Concurrent):**", "profile.invalid-jq");
   const batch2 = residentBatch(text, "- **Batch 2 (Concurrent):**", "- **Emit Report:**", "jira.known-key-direct-read");
-  const missing = ["getJiraIssue", "getTransitionsForJiraIssue"].filter((tool) => !batch2.includes(tool));
-  if (missing.length) throw new Error(`jira.known-key-direct-read: Batch 2 is missing ${missing.join(", ")}`);
-  if (!batch2.includes("Known Jira key route") || !batch2.includes("do not use `atlassian-mcp/search` or Rovo search for a known Jira key"))
-    throw new Error("jira.known-key-direct-read: resident Batch 2 must require direct reads and forbid discovery search for a known key");
-  if (!batch1.includes('{scripts["fetch-mr.mjs"].run}') || !batch1.includes("getAccessibleAtlassianResources") || !batch1.includes("glab auth status") || !batch1.includes("do not run `glab api user --jq`"))
-    throw new Error("profile.invalid-jq: resident Batch 1 must retain the bundled auth-status route and forbid glab api user --jq");
+  const requiredDirectReads = ["getJiraIssue", "getTransitionsForJiraIssue"];
+  const missing = requiredDirectReads.filter((tool) => !batch2.includes(tool));
+  if (missing.length) throw new Error(`jira.known-key-direct-read: resident Batch 2 is missing ${missing.join(", ")}`);
+
+  const directRoute = batch2.replace(/\s+/g, " ").toLowerCase();
+  if (
+    !directRoute.includes("known jira key direct-read route") ||
+    !directRoute.includes("do not use `atlassian-mcp/search`, rovo, or any discovery search for that known jira key")
+  )
+    throw new Error("jira.known-key-direct-read: resident Batch 2 must require direct reads and forbid Atlassian/Rovo discovery search for a known key");
+
+  const profileRoute = batch1.replace(/\s+/g, " ").toLowerCase();
+  if (
+    !batch1.includes('{scripts["fetch-mr.mjs"].run}') ||
+    !batch1.includes("getAccessibleAtlassianResources") ||
+    !profileRoute.includes("glab auth status") ||
+    !profileRoute.includes("do not run the unsupported profile command `glab api user --jq .username`")
+  )
+    throw new Error("profile.invalid-jq: resident Batch 1 must retain the bundled auth-status route and forbid glab api user --jq .username");
+}
+
+/** Validate the visible Draft flag plus the first-report authorization and branch actions. */
+function validateFirstReportQuality(text) {
+  const template = findActualResidentReportTemplate(text);
+  const step5Text = text.slice(template.step5.start, template.step6?.start ?? template.step5.end);
+  const body = template.fence.body;
+
+  if (!body.includes("**Flags:** {triage.flags}"))
+    throw new Error("report.draft-flag: template lacks the visible Flags row");
+  if (
+    !step5Text.includes("When `mr.draft` is true") ||
+    !step5Text.includes("Draft MR — review may proceed, but it is not ready for merge completion.")
+  )
+    throw new Error("report.draft-flag: Draft MR must be a visible non-blocking flag that permits review but blocks merge completion");
+  if (
+    !body.includes("implement only approved ✅ Fix / 🔵 Nitpick items") ||
+    !body.includes("leave 💬 Question / ⚠️ Disagree items unresolved and outside this authorization")
+  )
+    throw new Error("report.approval-scope: implementation authorization must exclude unresolved Question and Disagree items");
+  if (!body.includes("{approval.checkout} — check out the MR source branch `{mr.sourceBranch}`."))
+    throw new Error("report.source-branch-action: checkout action must identify the MR source branch");
+  if (/fast-forward branch/i.test(step5Text))
+    throw new Error("report.source-branch-action: ambiguous fast-forward branch wording is forbidden");
 }
 
 /**
@@ -4620,16 +4657,46 @@ function testWorkflowTimingAndCallableContracts() {
   truthy("callable: structured static policy accepts bundled route", staticResult !== undefined);
   validateKnownJiraDirectRoute(docs.skill);
   truthy("route: resident Batch 1 auth route and Batch 2 known-key direct reads are allowed", true);
-  throws(
-    "jira.known-key-direct-read: rejects a missing Batch 2 direct Jira read",
-    () => validateKnownJiraDirectRoute(docs.skill.replace("Call `getJiraIssue` and `getTransitionsForJiraIssue` together", "Call `getJiraIssue` together")),
-    "jira.known-key-direct-read",
-  );
-  throws(
-    "profile.invalid-jq: rejects an omitted profile-command prohibition",
-    () => validateKnownJiraDirectRoute(docs.skill.replace("do not run `glab api user --jq`", "")),
-    "profile.invalid-jq",
-  );
+  for (const [label, mutation, id] of [
+    [
+      "missing Batch 2 direct Jira read",
+      docs.skill.replace("call `getJiraIssue` and `getTransitionsForJiraIssue` together", "call `getJiraIssue` together"),
+      "jira.known-key-direct-read",
+    ],
+    [
+      "missing known-key Rovo prohibition",
+      docs.skill.replace("Rovo, or any discovery search for that known Jira key", "any discovery search for that known Jira key"),
+      "jira.known-key-direct-read",
+    ],
+    [
+      "missing unsupported profile-command prohibition",
+      docs.skill.replace("do not run the unsupported profile command `glab api user --jq .username`", "use the bundled profile route"),
+      "profile.invalid-jq",
+    ],
+  ]) throws(`route fixture: ${label}`, () => validateKnownJiraDirectRoute(mutation), id);
+
+  validateFirstReportQuality(docs.skill);
+  truthy("report quality: Draft flag, authorization split, and source-branch action are valid", true);
+  for (const [label, mutation, id] of [
+    [
+      "missing Draft MR flag",
+      docs.skill.replace("Draft MR — review may proceed, but it is not ready for merge completion.", "Draft MR"),
+      "report.draft-flag",
+    ],
+    [
+      "Question and Disagree become authorized implementation",
+      docs.skill.replace(
+        "leave 💬 Question / ⚠️ Disagree items unresolved and outside this authorization",
+        "implement 💬 Question / ⚠️ Disagree items too",
+      ),
+      "report.approval-scope",
+    ],
+    [
+      "checkout action loses MR source-branch identity",
+      docs.skill.replace("check out the MR source branch `{mr.sourceBranch}`", "fast-forward branch"),
+      "report.source-branch-action",
+    ],
+  ]) throws(`report fixture: ${label}`, () => validateFirstReportQuality(mutation), id);
   const fixtures = [
     ["plain forbidden callable", "CALL: glab_mr_view"],
     ["namespaced forbidden callable", "TOOL: mcp_gitlab_glab_mr_diff"],

@@ -34,11 +34,15 @@
 // quiet without adding a package. Same pattern as server.js.
 const proc = /** @type {any} */ (globalThis).process;
 // @ts-ignore -- no @types/node by design
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+// @ts-ignore -- no @types/node by design
+import { promisify } from "node:util";
 // @ts-ignore -- no @types/node by design
 import { statSync } from "node:fs";
 // @ts-ignore -- no @types/node by design
 import { delimiter, isAbsolute, join } from "node:path";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Duplicated from server/graphql.js rather than imported: the import would be
@@ -233,39 +237,57 @@ async function loadChecks() {
  * Either can come back undefined. That is reported honestly as `undetermined`
  * downstream; it is never guessed at.
  */
-function localContext() {
+async function localContext() {
   let remote;
   let branch;
-  // `gitBin`, never a bare "git" — see resolveBin. A null binary is the same outcome as
-  // a failed read: the wrong-project check reports `undetermined` rather than passing.
-  if (gitBin) {
-    try {
-      // Scrubbed: a configured remote can embed a credential, and this value is printed,
-      // fed to the wrong-project check, and captured in the session transcript.
-      const raw = execFileSync(gitBin, ["remote", "get-url", "origin"], { encoding: "utf8" }).trim();
-      remote = raw ? scrubSecrets(raw) : undefined;
-    } catch {
-      // Not a git repo, or no `origin`.
-    }
-    try {
-      // Gathered here for the same reason as the remote: the branch comparison is the one
-      // the report got wrong on MR !510, claiming the MR's branch was "already checked
-      // out" while this value said otherwise. Supplying it makes the tool decide.
-      branch = execFileSync(gitBin, ["branch", "--show-current"], { encoding: "utf8" }).trim() || undefined;
-    } catch {
-      // Detached HEAD, or not a git repo.
-    }
-  }
+  let user;
 
-  // `spawnSync`, because `glab auth status` prints its "Logged in to X as Y" line to
-  // stderr on several versions and exits non-zero when only some hosts are logged in.
-  // Reading both streams regardless of exit code is the only form that works across them.
-  const auth = spawnSync(glabBin, instance ? ["auth", "status", "--hostname", instance] : ["auth", "status"], {
+  const remoteTask = gitBin
+    ? execFileAsync(gitBin, ["remote", "get-url", "origin"], { encoding: "utf8" })
+        .then((res) => {
+          const raw = (res.stdout || "").trim();
+          remote = raw ? scrubSecrets(raw) : undefined;
+        })
+        .catch(() => {
+          // Not a git repo, or no `origin`.
+        })
+    : Promise.resolve();
+
+  const branchTask = gitBin
+    ? execFileAsync(gitBin, ["branch", "--show-current"], { encoding: "utf8" })
+        .then((res) => {
+          branch = (res.stdout || "").trim() || undefined;
+        })
+        .catch(() => {
+          // Detached HEAD, or not a git repo.
+        })
+    : Promise.resolve();
+
+  let dirty = false;
+  let dirtyFiles = [];
+
+  const statusTask = gitBin
+    ? execFileAsync(gitBin, ["status", "--porcelain"], { encoding: "utf8" })
+        .then((res) => {
+          const lines = (res.stdout || "").split(/\r?\n/).filter(Boolean);
+          dirty = lines.length > 0;
+          dirtyFiles = lines.map((l) => l.slice(3).trim());
+        })
+        .catch(() => {})
+    : Promise.resolve();
+
+  const authTask = execFileAsync(glabBin, instance ? ["auth", "status", "--hostname", instance] : ["auth", "status"], {
     encoding: "utf8",
-  });
-  const user = /\bas\s+([A-Za-z0-9._-]+)/.exec(`${auth.stdout ?? ""}\n${auth.stderr ?? ""}`)?.[1];
+  })
+    .then((res) => {
+      user = /\bas\s+([A-Za-z0-9._-]+)/.exec(`${res.stdout ?? ""}\n${res.stderr ?? ""}`)?.[1];
+    })
+    .catch((err) => {
+      user = /\bas\s+([A-Za-z0-9._-]+)/.exec(`${err.stdout ?? ""}\n${err.stderr ?? ""}`)?.[1];
+    });
 
-  return { remote, user, branch };
+  await Promise.all([remoteTask, branchTask, statusTask, authTask]);
+  return { remote, user, branch, dirty, dirtyFiles };
 }
 
 /**
@@ -309,7 +331,7 @@ function sleepSync(ms) {
  * budget is one retry to cover a genuine blip, not a general resilience layer — a host that
  * is actually down should fail fast and let the run report it.
  */
-function glab(args, maxAttempts = 2) {
+async function glab(args, maxAttempts = 2) {
   let lastErr;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -318,10 +340,11 @@ function glab(args, maxAttempts = 2) {
       // newlines, and no quoting scheme survives all three across shells.
       // `--hostname` is glab's own spelling; ours is `--instance` for the reason in the
       // header. The rename stops at this boundary.
-      return execFileSync(glabBin, instance ? [...args, "--hostname", instance] : args, {
+      const res = await execFileAsync(glabBin, instance ? [...args, "--hostname", instance] : args, {
         encoding: "utf8",
         maxBuffer: 64 * 1024 * 1024,
       });
+      return res.stdout;
     } catch (err) {
       lastErr = err;
       const raw = (err.stderr || err.stdout || err.message || String(err)).trim();
@@ -332,7 +355,7 @@ function glab(args, maxAttempts = 2) {
       // transcript, and this file's whole job is to be the fast part of batch 1.
       const backoffMs = 500;
       proc.stderr.write(`note: glab ${args.slice(0, 2).join(" ")} hit a transient failure, retrying once in ${backoffMs}ms\n`);
-      sleepSync(backoffMs);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
     }
   }
 
@@ -341,14 +364,6 @@ function glab(args, maxAttempts = 2) {
   const detail = scrubSecrets((lastErr.stderr || lastErr.stdout || lastErr.message || String(lastErr)).trim());
   proc.stderr.write(`glab ${args.slice(0, 2).join(" ")} failed: ${detail}\n`);
   proc.exit(1);
-}
-
-const checks = has("raw") ? null : await loadChecks();
-if (!checks && !has("raw")) {
-  proc.stderr.write(
-    "note: server/ modules not reachable from this skill folder — printing the raw payload.\n" +
-      "      Call triage_graphql_mr (or triage_mr_payload + reconcile_discussion_counts) on it yourself.\n",
-  );
 }
 
 /**
@@ -365,10 +380,11 @@ if (!checks && !has("raw")) {
  * Emitted without indentation: pretty-printing cost 9,411 bytes on that MR, 23% of it,
  * for whitespace nothing downstream reads.
  */
-function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx }) {
+function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx, checks: activeChecks }) {
+  const c = activeChecks;
   // Counts come from the unfiltered set, before any trimming, or the reconciliation
   // against `user_notes_count` would compare against a number we just changed.
-  const counts = checks.reconcileDiscussionCounts({
+  const counts = c.reconcileDiscussionCounts({
     discussions,
     userNotesCount: mr.user_notes_count,
     currentUser: ctx.user,
@@ -379,12 +395,12 @@ function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx }) {
   // from the unfiltered set either way, so a brief read reconciles identically to a full
   // one — the number is never a function of what got printed.
   const brief = has("brief");
-  const slim = brief ? null : checks.slimThreadsForReport(discussions);
+  const slim = brief ? null : c.slimThreadsForReport(discussions, 40);
 
   proc.stdout.write(
     JSON.stringify({
       mode: brief ? "brief" : "triaged",
-      triage: checks.triageMrPayload({
+      triage: c.triageMrPayload({
         mr,
         workspaceRemote: ctx.remote,
         currentUser: ctx.user,
@@ -392,7 +408,13 @@ function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx }) {
       }),
       counts: counts,
       mr,
-      ...(brief ? { threadIndex: checks.indexThreadsForReport(discussions) } : {}),
+      git: {
+        dirty: ctx.dirty ?? false,
+        dirtyFiles: ctx.dirtyFiles ?? [],
+        branch: ctx.branch ?? null,
+        remote: ctx.remote ?? null,
+      },
+      ...(brief ? { threadIndex: c.indexThreadsForReport(discussions) } : {}),
       ...(slim ? { discussions: slim.threads, omitted: slim.omitted } : {}),
       hasNextPage,
       endCursor,
@@ -400,12 +422,19 @@ function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx }) {
   );
 }
 
+const checksPromise = has("raw") ? Promise.resolve(null) : loadChecks();
+const contextPromise = localContext();
+
 if (has("rest")) {
-  // Fallback transport: two calls. `discussions` stays a raw string in `--raw` mode —
-  // pass it to `reconcile_discussion_counts` as `discussions_text` rather than
-  // re-parsing it. With the modules loaded it is parsed here instead, once, locally.
-  const mrText = glab(["api", `projects/${encoded}/merge_requests/${iid}`]);
-  const discussions = glab(["api", `projects/${encoded}/merge_requests/${iid}/discussions?per_page=100`, "--paginate"]);
+  const [checks, ctx] = await Promise.all([checksPromise, contextPromise]);
+  if (!checks && !has("raw")) {
+    proc.stderr.write(
+      "note: server/ modules not reachable from this skill folder — printing the raw payload.\n" +
+        "      Call triage_graphql_mr (or triage_mr_payload + reconcile_discussion_counts) on it yourself.\n",
+    );
+  }
+  const mrText = await glab(["api", `projects/${encoded}/merge_requests/${iid}`]);
+  const discussions = await glab(["api", `projects/${encoded}/merge_requests/${iid}/discussions?per_page=100`, "--paginate"]);
 
   if (!checks) {
     proc.stdout.write(JSON.stringify({ mode: "rest", mr: JSON.parse(mrText), discussions }, null, 2) + "\n");
@@ -430,20 +459,54 @@ if (has("rest")) {
       discussions: parsedDiscussions,
       hasNextPage: false,
       endCursor: null,
-      ctx: localContext(),
+      ctx,
+      checks,
     });
   }
 } else {
-  const out = glab([
-    "api",
-    "graphql",
-    "--raw-field",
-    `query=${MR_QUERY}`,
-    "--raw-field",
-    `fullPath=${project}`,
-    "--raw-field",
-    `iid=${iid}`,
-  ]);
+  const queryPromise = (async () => {
+    const token = proc.env?.GITLAB_TOKEN || proc.env?.GITLAB_ACCESS_TOKEN;
+    if (token && instance) {
+      try {
+        const res = await fetch(`https://${instance}/api/graphql`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "PRIVATE-TOKEN": token,
+          },
+          body: JSON.stringify({
+            query: MR_QUERY,
+            variables: { fullPath: project, iid: String(iid) },
+          }),
+        });
+        if (res.ok) {
+          const text = await res.text();
+          if (text.includes("mergeRequest")) return text;
+        }
+      } catch {
+        // Fallback to glab CLI
+      }
+    }
+    return glab([
+      "api",
+      "graphql",
+      "--raw-field",
+      `query=${MR_QUERY}`,
+      "--raw-field",
+      `fullPath=${project}`,
+      "--raw-field",
+      `iid=${iid}`,
+    ]);
+  })();
+
+  const [checks, ctx, out] = await Promise.all([checksPromise, contextPromise, queryPromise]);
+
+  if (!checks && !has("raw")) {
+    proc.stderr.write(
+      "note: server/ modules not reachable from this skill folder — printing the raw payload.\n" +
+        "      Call triage_graphql_mr (or triage_mr_payload + reconcile_discussion_counts) on it yourself.\n",
+    );
+  }
 
   // GraphQL answers 200 with an `errors` array rather than a non-zero exit, so a
   // failure here would otherwise look like a successful empty fetch.
@@ -460,6 +523,6 @@ if (has("rest")) {
   if (!checks) {
     proc.stdout.write(out.endsWith("\n") ? out : out + "\n");
   } else {
-    emitTriaged({ ...checks.normalizeGraphqlMr(parsed), ctx: localContext() });
+    emitTriaged({ ...checks.normalizeGraphqlMr(parsed), ctx, checks });
   }
 }

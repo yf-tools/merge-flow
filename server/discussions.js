@@ -90,7 +90,7 @@ function threadState(notes) {
  * @param {Array<object>} discussions Unfiltered `.../discussions` entries.
  * @param {number} [excerptAt] Characters of a resolved note's body to keep.
  */
-export function slimThreadsForReport(discussions, excerptAt = 160) {
+export function slimThreadsForReport(discussions, excerptAt = 40) {
   if (!Array.isArray(discussions)) throw new TypeError("discussions must be an array of discussion objects");
 
   const omitted = { systemOnlyThreads: 0, systemNotes: 0, resolvedBodiesExcerptedAt: excerptAt };
@@ -106,20 +106,28 @@ export function slimThreadsForReport(discussions, excerptAt = 160) {
       continue;
     }
 
+    const targetNotes = resolved ? feedback.slice(0, 1) : feedback;
+    const rawPos = feedback.find((n) => n?.position)?.position ?? null;
+    const position = resolved ? undefined : rawPos;
+
     threads.push({
       id: d?.id ?? null,
       resolvable,
       resolved,
-      position: feedback.find((n) => n?.position)?.position ?? null,
-      notes: feedback.map((n) => {
+      ...(position !== undefined ? { position } : {}),
+      notes: targetNotes.map((n) => {
         const body = typeof n?.body === "string" ? n.body : "";
         const cut = resolved && body.length > excerptAt;
         return {
           id: n?.id ?? null,
           author: n?.author ?? null,
-          created_at: n?.created_at ?? null,
-          resolvable: n?.resolvable === true,
-          resolved: n?.resolved === true,
+          ...(resolved
+            ? {}
+            : {
+                created_at: n?.created_at ?? null,
+                resolvable: n?.resolvable === true,
+                resolved: n?.resolved === true,
+              }),
           body: cut ? `${body.slice(0, excerptAt).trimEnd()}…` : body,
           ...(cut ? { bodyExcerpted: true } : {}),
         };

@@ -1,0 +1,39 @@
+# First-report benchmark (unnamed)
+
+Status: **FAIL**  
+Attempts: 0 (5 cold / 5 warm)  
+Read-only enforcement: NOT VERIFIED
+
+## Cold cohort
+
+| Run | Latency (ms) |
+| --- | ---: |
+
+Sorted: 
+Median (third sorted value): **— ms**
+Slowest: **—** (— ms)
+
+Complete Tool_Sequence for slowest run:
+
+```text
+—
+```
+
+## Warm cohort
+
+| Run | Latency (ms) |
+| --- | ---: |
+
+Sorted: 
+Median (third sorted value): **— ms**
+Slowest: **—** (— ms)
+
+Complete Tool_Sequence for slowest run:
+
+```text
+—
+```
+
+## Failures
+
+None.
