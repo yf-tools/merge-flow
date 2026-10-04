@@ -38,9 +38,9 @@ import { execFile, execFileSync, spawnSync } from "node:child_process";
 // @ts-ignore -- no @types/node by design
 import { promisify } from "node:util";
 // @ts-ignore -- no @types/node by design
-import { statSync } from "node:fs";
+import { statSync, writeFileSync, mkdirSync } from "node:fs";
 // @ts-ignore -- no @types/node by design
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, isAbsolute, join, dirname } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,6 +56,7 @@ const MR_QUERY = `query($fullPath: ID!, $iid: String!) {
       conflicts mergeStatusEnum detailedMergeStatus draft webUrl
       author { username }
       assignees { nodes { username } }
+      headPipeline { id status detailedStatus { text label } }
       discussions(first: 100) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -71,7 +72,7 @@ const MR_QUERY = `query($fullPath: ID!, $iid: String!) {
 }`;
 
 const USAGE =
-  "usage: node scripts/fetch-mr.mjs --project <group/repo> --iid <n> [--instance <host>] [--note <id>] [--rest] [--raw] [--brief]\n";
+  "usage: node scripts/fetch-mr.mjs --project <group/repo> --iid <n> [--instance <host>] [--note <id>] [--rest] [--raw] [--brief] [--out <filepath>]\n";
 
 const argv = proc.argv.slice(2);
 const flag = (name) => {
@@ -84,11 +85,38 @@ const has = (name) => argv.includes(`--${name}`);
 // query whichever host `glab` is configured for by default, and iid 491 exists on more
 // than one GitLab — so the run would get a real merge request from the wrong server
 // and have no way to tell. Failing here is the only outcome that can't be mistaken.
-const KNOWN = new Set(["project", "iid", "instance", "note", "rest", "raw", "brief"]);
+const KNOWN = new Set(["project", "iid", "instance", "note", "rest", "raw", "brief", "out"]);
 const unknown = argv.filter((a) => a.startsWith("--") && !KNOWN.has(a.slice(2)));
 if (unknown.length > 0) {
   proc.stderr.write(`unknown flag(s): ${unknown.join(", ")}\n${USAGE}`);
   proc.exit(2);
+}
+
+const outPath = flag("out");
+
+function saveAndEmit({ fullText, summaryObj }) {
+  if (outPath) {
+    try {
+      const dir = dirname(outPath);
+      if (dir && dir !== "." && !fileExists(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      let formattedText = fullText;
+      try {
+        formattedText = JSON.stringify(JSON.parse(fullText), null, 2);
+      } catch {
+        // preserve raw text if not valid JSON
+      }
+      writeFileSync(outPath, formattedText.endsWith("\n") ? formattedText : formattedText + "\n", "utf8");
+    } catch (err) {
+      proc.stderr.write(`failed to write output to ${outPath}: ${err?.message ?? err}\n`);
+      proc.exit(1);
+    }
+    const summary = summaryObj ? { writtenTo: outPath, ...summaryObj } : { writtenTo: outPath };
+    proc.stdout.write(JSON.stringify(summary) + "\n");
+    return;
+  }
+  proc.stdout.write(fullText.endsWith("\n") ? fullText : fullText + "\n");
 }
 
 const project = flag("project");
@@ -269,7 +297,10 @@ async function localContext() {
   const statusTask = gitBin
     ? execFileAsync(gitBin, ["status", "--porcelain"], { encoding: "utf8" })
         .then((res) => {
-          const lines = (res.stdout || "").split(/\r?\n/).filter(Boolean);
+          const lines = (res.stdout || "")
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .filter((l) => !l.slice(3).trim().startsWith(".scratch"));
           dirty = lines.length > 0;
           dirtyFiles = lines.map((l) => l.slice(3).trim());
         })
@@ -395,31 +426,44 @@ function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx, checks: act
   // from the unfiltered set either way, so a brief read reconciles identically to a full
   // one — the number is never a function of what got printed.
   const brief = has("brief");
-  const slim = brief ? null : c.slimThreadsForReport(discussions, 40);
+  const slim = brief ? null : c.slimThreadsForReport(discussions, 40, ctx.user);
 
-  proc.stdout.write(
-    JSON.stringify({
-      mode: brief ? "brief" : "triaged",
-      triage: c.triageMrPayload({
-        mr,
-        workspaceRemote: ctx.remote,
-        currentUser: ctx.user,
-        currentBranch: ctx.branch,
-      }),
-      counts: counts,
+  const payloadObj = {
+    mode: brief ? "brief" : "triaged",
+    triage: c.triageMrPayload({
       mr,
-      git: {
-        dirty: ctx.dirty ?? false,
-        dirtyFiles: ctx.dirtyFiles ?? [],
-        branch: ctx.branch ?? null,
-        remote: ctx.remote ?? null,
-      },
-      ...(brief ? { threadIndex: c.indexThreadsForReport(discussions) } : {}),
-      ...(slim ? { discussions: slim.threads, omitted: slim.omitted } : {}),
+      workspaceRemote: ctx.remote,
+      currentUser: ctx.user,
+      currentBranch: ctx.branch,
+      dirty: ctx.dirty,
+      dirtyFiles: ctx.dirtyFiles,
+    }),
+    counts: counts,
+    mr,
+    git: {
+      dirty: ctx.dirty ?? false,
+      dirtyFiles: ctx.dirtyFiles ?? [],
+      branch: ctx.branch ?? null,
+      remote: ctx.remote ?? null,
+    },
+    ...(brief ? { threadIndex: c.indexThreadsForReport(discussions, ctx.user) } : {}),
+    ...(slim ? { discussions: slim.threads, omitted: slim.omitted } : {}),
+    hasNextPage,
+    endCursor,
+  };
+
+  saveAndEmit({
+    fullText: JSON.stringify(payloadObj),
+    summaryObj: {
+      mode: payloadObj.mode,
+      triage: payloadObj.triage,
+      counts: payloadObj.counts,
+      mr: payloadObj.mr,
+      git: payloadObj.git,
       hasNextPage,
       endCursor,
-    }) + "\n",
-  );
+    },
+  });
 }
 
 const checksPromise = has("raw") ? Promise.resolve(null) : loadChecks();
@@ -437,7 +481,10 @@ if (has("rest")) {
   const discussions = await glab(["api", `projects/${encoded}/merge_requests/${iid}/discussions?per_page=100`, "--paginate"]);
 
   if (!checks) {
-    proc.stdout.write(JSON.stringify({ mode: "rest", mr: JSON.parse(mrText), discussions }, null, 2) + "\n");
+    saveAndEmit({
+      fullText: JSON.stringify({ mode: "rest", mr: JSON.parse(mrText), discussions }, null, 2),
+      summaryObj: { mode: "rest" },
+    });
   } else {
     // ndjson: one discussion per line. A trailing blank line is normal; a line that
     // won't parse is a truncated response, and that must fail loudly rather than
@@ -521,7 +568,10 @@ if (has("rest")) {
   }
 
   if (!checks) {
-    proc.stdout.write(out.endsWith("\n") ? out : out + "\n");
+    saveAndEmit({
+      fullText: out,
+      summaryObj: { mode: "raw" },
+    });
   } else {
     emitTriaged({ ...checks.normalizeGraphqlMr(parsed), ctx, checks });
   }

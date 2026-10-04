@@ -302,6 +302,8 @@ const TOOL_HANDLERS = {
       workspaceRemote: args.workspace_remote,
       currentUser: args.current_user,
       currentBranch: args.current_branch,
+      dirty: args.dirty,
+      dirtyFiles: args.dirty_files,
     }),
 
   reconcile_discussion_counts: (args) =>
@@ -321,6 +323,8 @@ const TOOL_HANDLERS = {
         workspaceRemote: args.workspace_remote,
         currentUser: args.current_user,
         currentBranch: args.current_branch,
+        dirty: args.dirty,
+        dirtyFiles: args.dirty_files,
       }),
       counts: reconcileDiscussionCounts({
         discussions,

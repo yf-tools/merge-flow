@@ -11,7 +11,7 @@ SKILL.md declares the lane choice and that the gates are identical either way. T
 | 0–3 | As written | Identical — including `triage_mr_payload`, the reconciliation, and the Jira identity check |
 | 4 classify | One classification per thread | No classification: the threads aren't work items here. Open comments still tell you which side of a conflict was reviewer-requested |
 | 5 report | Triage report gate | **Resolution plan gate** (template below). The conflict is the *subject*, so it does not also occupy the Blockers row |
-| 6 | Checkout, the approved Jira move, then read the files the threads point at | Same, plus **both sides** of every conflicted region. **The merge itself is not part of the checkout** — it waits for the plan gate |
+| 6 | Checkout, the approved Jira move, then read the files the threads point at | Same (checkout, reassign if flagged, and Jira start transition if in To Do/Backlog/Review), plus **both sides** of every conflicted region. **The merge itself is not part of the checkout** — it waits for the plan gate |
 | 6b | New scope from an answered Question or from what the reads turned up | Same, and it applies to anything the resolution turns out to need beyond the plan you presented |
 | 7 | Fixes, one at a time | The resolution, one region at a time. Files go in `conflict_files`, never `approved_files`. **Drops out entirely if the user resolves online** |
 | 8 | Summary gate | Same gate, before the **merge commit**. `mixedFiles` splits it in two |
@@ -90,7 +90,7 @@ Proceed with this plan, or resolve it online yourself? Say which rows to change 
 
 **The "Beyond a mechanical pick" row is the one that matters, and it is not optional.** If it says `none`, that is a claim under invariant 1 — you are asserting every region is a straight side-pick. On MR !508 the resolution dropped the branch's own refactor choices, relocated a private method, changed `protected`/`private` on three members and removed `standalone: true`, and every one of those would have belonged on that row. They reached the user after the commit.
 
-**Never start the merge or rebase before this gate closes.** On MR !508 `git merge origin/develop --no-edit` went out 90 seconds after the URL, before anything was shown — and the strategy had been chosen silently from `git log --merges`. Inspecting the convention is right; deciding it alone is not. If you need to see the conflicts before you can fill in the table, use `git merge-tree` below — it reports conflicts **without** touching the working tree, which is exactly what it's for.
+**Never start the merge or rebase before this gate closes.** On MR !508 `git merge origin/develop --no-edit` went out 90 seconds after the URL, before anything was shown — and the strategy had been chosen silently from `git log --merges`. Inspecting the convention is right; deciding it alone is not. If GitLab project settings mandate fast-forward merges (`merge_method: ff`), merge commits are rejected by the remote — rebase is required. If you need to see the conflicts before you can fill in the table, use `git merge-tree` below — it reports conflicts **without** touching the working tree, which is exactly what it's for.
 
 **A dirty tree or a branch switch is a bigger deal in this lane, not a smaller one.** Step 6's rules apply unchanged, and this plan gate's **Flags** row is where the switch gets named — before it happens, not in the closing summary 30 minutes later.
 
@@ -115,17 +115,19 @@ When an MR has conflicts (Step 2) and you need to know *which* files actually co
  line3
 ```
 
-So `^<<<<<<<` matches nothing. There is also **no `CONFLICT:` line** in this three-argument form — those come from the newer `--write-tree` mode, which in turn doesn't print these per-file sections, so don't mix patterns from the two. Because the output is long, write it to a file rather than fighting a pager or a truncated pipe:
+So `^<<<<<<<` matches nothing. There is also **no `CONFLICT:` line** in this three-argument form — those come from the newer `--write-tree` mode, which in turn doesn't print these per-file sections, so don't mix patterns from the two. **Refresh remote refs first:** run `git fetch origin {TARGET}` before computing `merge-base`, or `origin/{TARGET}` evaluates an outdated ref. Because the output is long, write it to a file rather than fighting a pager or a truncated pipe:
 
 ```bash
+git fetch origin {TARGET}
 base=$(git merge-base HEAD origin/{TARGET})
 git merge-tree "$base" HEAD origin/{TARGET} > /tmp/mt.txt 2>&1
 grep -n '<<<<<<<' /tmp/mt.txt
 ```
 
-The same three steps in PowerShell, since no text-search primitive is common to both shells:
+The same steps in PowerShell, since no text-search primitive is common to both shells:
 
 ```powershell
+git fetch origin {TARGET}
 $base = git merge-base HEAD origin/{TARGET}
 git merge-tree $base HEAD origin/{TARGET} 2>&1 | Out-File -FilePath "$env:TEMP\mt.txt" -Encoding utf8
 Select-String -Path "$env:TEMP\mt.txt" -Pattern '<<<<<<<' | Select-Object LineNumber, Line
@@ -143,7 +145,7 @@ Each hit is one conflicted region; the file it belongs to is the nearest precedi
 
 `has_conflicts: true` (usually alongside `merge_status: "cannot_be_merged"` and `detailed_merge_status: "conflict"`) means this MR cannot merge as it stands. **It is a blocker, so the Blockers row states the fact and nothing else, while its question replaces the report's closing `Go ahead?` and is asked there — once, at the end, never in the row as well** — the report still renders in full. It is not a detail to bury below the items, and it is not something to notice later when a build fails.
 
-> ⚠️ Conflicts against `develop`, `detailed_merge_status: conflict` — it can't merge as-is. Do you want the conflict resolved first, or should I work through the review comments above and leave the conflict to you?
+> ⚠️ Conflicts against `develop`, `detailed_merge_status: conflict` — it can't merge as-is. Do you want the conflict resolved first (including switching branch, reassigning MR/Jira to you if not yours, and moving Jira to In Progress if in To Do), or should I work through the review comments above and leave the conflict to you?
 
 Then wait for that answer. Why it replaces the go-ahead rather than riding alongside it: resolving a conflict often rewrites the very code the review comments are about, so fixing first can mean work a merge then overwrites — and the order is the user's call. **If they choose "resolve first", the run switches to the conflict-first lane** — Step 0b's table tells you what changes. Either way that answer also releases batches 3 and 4, so don't ask for a go-ahead a second time.
 

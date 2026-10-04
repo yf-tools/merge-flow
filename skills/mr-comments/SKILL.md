@@ -51,7 +51,7 @@ Accept only:
 https://{host}/{project_path}/-/merge_requests/{iid}[#note_{note_id}]
 ```
 
-Split at `/-/`; preserve nested project paths and URL-encode each slash for API inputs. A `#note_` fragment is only a starting pointer; fetch every discussion and verify it. If the URL does not split cleanly, stop and ask rather than guessing. GitHub and Bitbucket links are out of scope. If no URL was supplied, derive the host and project path from the workspace remote without inventing an IID.
+Split at `/-/`; preserve nested project paths and URL-encode each slash for API inputs. A `#note_` fragment is only a starting pointer; fetch every discussion and verify it. If the URL does not split cleanly, stop and ask rather than guessing. GitHub and Bitbucket links are out of scope. If no URL was supplied, derive the host and project path from the workspace remote without inventing an IID; resolve the active open MR on the current branch (`projects/{project_path_encoded}/merge_requests?source_branch={branch}&state=opened`) before proceeding.
 
 ## Step 0b — Decide what the run is for, then pick the lane
 
@@ -72,13 +72,19 @@ The lane changes the middle of the run. It never changes which gates exist. For 
 
 A wrong project, terminal MR state, zero comments, incomplete pagination or unreconciled counts blocks. `undetermined` is not a pass. A no-ticket result is a flag only when the resident triage rules say it is safe; **No key at all is a hard stop** when Jira identity is required. Never claim current code, a verified fix, a proposed diff or completed handling before Step 6 reads the approved files. Resolved discussions are counted only as not re-checked against project code.
 
+**Thread review state (`replyStatus`):**
+- **`unanswered`:** Fresh reviewer comment, you haven't replied yet.
+- **`author_replied`:** You replied last (describing fix/explanation), no reviewer reply since. Note in report: already answered by you, awaiting reviewer verification or ready to resolve on GitLab.
+- **`reopened`:** Reviewer replied *after* your reply (e.g. follow-up question or indicating a fix was incomplete). Always quote the reviewer's *latest follow-up comment* rather than the original stale comment so the report captures the current objection.
+- **Related/Duplicate threads:** When multiple threads raise the exact same issue across files (e.g. repeated question), group or cross-reference them in the report so the user doesn't make duplicate redundant decisions.
+
 ### Four batches, not fifteen turns
 
-- **Batch 1 (Concurrent):** Run `{scripts["fetch-mr.mjs"].run}` and `getAccessibleAtlassianResources()` together in one turn. The bundled fetch script already obtains authenticated GitLab identity through `glab auth status` and collects git state (`branch`, `remote`, `dirty`); do not run the unsupported profile command `glab api user --jq .username`.
-- **Batch 2 (Concurrent):** **Known Jira key direct-read route:** when one key is settled, call `getJiraIssue` and `getTransitionsForJiraIssue` together in one turn. Do not use `atlassian-mcp/search`, Rovo, or any discovery search for that known Jira key:
+- **Batch 1 (Concurrent):** Dispatch `{scripts["fetch-mr.mjs"].run}` and `getAccessibleAtlassianResources()` concurrently in your very first turn — do not serialize them. Always pass `--out <path>` (e.g. `--out .git/mr-{iid}.json`) to save full discussions to disk and receive a compact summary on stdout, preventing command runner buffer truncation on MRs with long threads and keeping the workspace tree completely clean. The bundled fetch script already obtains authenticated GitLab identity through `glab auth status` and collects git state (`branch`, `remote`, `dirty`); do not run the unsupported profile command `glab api user --jq .username`.
+- **Batch 2 (Concurrent):** **Known Jira key direct-read route:** when one key is settled, call `getJiraIssue` and `getTransitionsForJiraIssue` together in one turn. In this same turn, read the discussion payload from `.git/mr-{iid}.json` via `view_file` in one call without line slices. Do not use `atlassian-mcp/search`, Rovo, or any discovery search for that known Jira key:
   - `cloudId`: The resource `id` from Batch 1's `getAccessibleAtlassianResources` (**never the GitLab hostname**).
   - `issueIdOrKey`: `triage.facts.ticketKey` from Batch 1.
-  - **CRITICAL:** Pass `fields: ["status", "summary"]` to `getJiraIssue`. Without `fields`, Jira returns hundreds of unneeded fields that overflow into `output.txt` and cost extra read turns.
+  - **CRITICAL:** Pass `fields: ["status", "summary"]` to `getJiraIssue`. Without `fields`, Jira returns hundreds of unneeded fields that overflow into `output.txt` and cost extra read turns. Skip reading `output.txt` in this turn: if the ticket is already in active development (e.g. `In Progress`), no start transition is needed. If the ticket is pre-active (`To Do` / `Backlog`), propose moving to `In Progress` in the report authorization list without spending an extra turn reading `output.txt`; defer reading the transition ID from `output.txt` to Batch 3 alongside checkout. Emit the report immediately.
 - **Emit Report:** The first report follows immediately as the first user-facing output; no introductory message, reference reads, or same-turn continuation.
 - **Batch 3 (After reply):** Checkout, approved Jira start transition and deferred profile reads. **This checkout is batch 3 — after the report and the reply to it, not before.**
 - **Batch 4 (After checkout):** Read the approved discussion files.
@@ -88,7 +94,7 @@ A wrong project, terminal MR state, zero comments, incomplete pagination or unre
 The normal route is immediately beside its deny rule:
 
 ```text
-ROUTE: {scripts["fetch-mr.mjs"].run} --project {project_path} --iid {iid} --instance {host}
+ROUTE: {scripts["fetch-mr.mjs"].run} --project {project_path} --iid {iid} --instance {host} --out {scratch_path}
 ROUTE: {scripts["git-context.mjs"].run}
 DENY: never call or invoke any callable whose normalized name begins with glab_mr_
 ```
@@ -108,8 +114,9 @@ Only after the normal result is incomplete and an explicit fallback is selected 
 
 {counts.countLine} · {counts.unresolved} unresolved / {counts.resolved} resolved on GitLab
 
-- **State:** {mr.state}, {mr.mergeability} · **Target:** `{mr.targetBranch}`
-- **Ticket:** `{jira.key}` — **{jira.currentStatus}** · **Branch:** `{mr.sourceBranch}`
+- **State:** {mr.state}, {mr.mergeability} · **Target:** `{mr.targetBranch}` · **Pipeline:** {mr.pipeline}
+- **Ticket:** `{jira.key}` — **{jira.currentStatus}**
+- **Branch:** `{mr.sourceBranch}`
 - **Blockers:** {triage.blockers} — or `none`
 - **Flags:** {triage.flags} — omit when none
 
@@ -128,17 +135,18 @@ Reviewer ({discussion.author}):
 **Say go and I'll:**
 
 1. {approval.checkout} — check out the MR source branch `{mr.sourceBranch}`.
-2. {approval.jiraStart}
-3. {approval.postCheckoutReads} — implement only approved ✅ Fix / 🔵 Nitpick items; leave 💬 Question / ⚠️ Disagree items unresolved and outside this authorization.
-4. {approval.laterStop}
+2. {approval.reassign} — if flagged as not assigned to you, reassign MR !{mr.iid} and Jira `{jira.key}` to you.
+3. {approval.jiraStart}
+4. {approval.postCheckoutReads} — implement only approved ✅ Fix / 🔵 Nitpick items; leave 💬 Question / ⚠️ Disagree items unresolved and outside this authorization.
+5. {approval.laterStop}
 
 {closing.defaultQuestion}
 {closing.blockerReplacement}
 ```
 
-The template's semantic roles are stable even when prose is reworded. `{counts.needsYou} + {counts.feedbackThreads}` must account for all feedback, and **Report `feedbackThreads`, never `threadsTotal`.** Use the tool's `countLine` verbatim. **Resolve state and `{counts.needsYou}` are not quite the same split.** When `mr.draft` is true, render this visible non-blocking flag: `Draft MR — review may proceed, but it is not ready for merge completion.` A blocker question replaces the default question; it does not add a second question. A conflicted MR in the review lane uses the resident blocker question and leaves `references/conflicts.md` unloaded. If the user replies “resolve conflicts first”, that reply starts the later conflict-first lane.
+The template's semantic roles are stable even when prose is reworded. `{counts.needsYou} + {counts.feedbackThreads}` must account for all feedback, and **Report `feedbackThreads`, never `threadsTotal`.** Use the tool's `countLine` verbatim. **Resolve state and `{counts.needsYou}` are not quite the same split.** When `mr.draft` is true, render this visible non-blocking flag: `Draft MR — review may proceed, but it is not ready for merge completion.` A blocker question replaces the default question; it does not add a second question. A conflicted or zero-comment MR uses the resident blocker question and leaves `references/conflicts.md` unloaded, but must preserve the reassign offer (if not assigned to you) and the Jira start transition (`To Do` → `In Progress`) alongside checkout and conflict resolution in the proposed action. If the user replies “resolve conflicts first”, that reply starts the later conflict-first lane.
 
-**What a bare “go ahead” covers: batches 3 and 4, the Jira transition the report named, and implementation of the ✅ Fix / 🔵 Nitpick items.** 💬 Question / ⚠️ Disagree items remain unresolved and outside that authorization. Commits, pushes, replies, resolutions, Jira finish writes, worklogs and lesson writes remain gated. The Jira move is a line in that list, not a second question. **The stop is ending the turn, not announcing that you are about to.**
+**What a bare “go ahead” covers: batches 3 and 4, checkout, the Jira transition the report named (moving To Do or To Review to In Progress), reassigning MR and Jira ticket if not assigned to you, and implementation of the ✅ Fix / 🔵 Nitpick items.** 💬 Question / ⚠️ Disagree items remain unresolved and outside that authorization. Commits, pushes, replies, resolutions, Jira finish writes, worklogs and lesson writes remain gated. The Jira move is a line in that list, not a second question. **The stop is ending the turn, not announcing that you are about to.**
 
 ## Post-report index
 

@@ -52,7 +52,7 @@ These stop immediately because they mean _the premise is wrong_ — either you h
 ### ➡️ Carry to Step 6 (the common case — say nothing now)
 
 - **Active development** (`In Progress`, `In Development`, `Doing`, or the project's verified equivalent) → nothing to do, ever. No write, no question, and **no mention of it** — this is a check that passed, and per the output-discipline section those stay silent. Do not write "Jira is already In Progress ✓" as reassurance; it costs the user a line to read and tells them nothing they needed.
-- **New/backlog** (`To Do`, `Backlog`, `Open`) → a transition to active development will be needed. Resolve the exact target now so Step 6 can name it, then move on quietly.
+- **New/backlog** (`To Do`, `Backlog`, `Open`) → a transition to active development (`In Progress`) will be needed. Resolve the exact target now so Step 5/6 can name it, then move on quietly. This applies whether the MR proceeds down the review lane, has zero comments, or switches to conflict resolution.
 - **Review state** (`To Review`, `In Review`, `Review`, or verified equivalent) → review feedback means implementation has resumed, so the same applies: resolve the exact target, stay quiet, ask in Step 6.
 
 For both of the last two, do the read-only preparation now so the Step 6 question is concrete and needs no follow-up:

@@ -23,7 +23,7 @@ import { join, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { triageMrPayload, normalizeProjectPath, normalizeProjectHost, parseMrTitle } from "../server/mr-payload.js";
-import { reconcileDiscussionCounts, slimThreadsForReport } from "../server/discussions.js";
+import { reconcileDiscussionCounts, slimThreadsForReport, threadReplyStatus, indexThreadsForReport } from "../server/discussions.js";
 import { attributeStagedHunks, parseStagedDiff } from "../server/hunks.js";
 import { normalizeGraphqlMr, stripGid, MR_QUERY } from "../server/graphql.js";
 import { summarizeBenchmark, renderMarkdown } from "./benchmark-first-report.mjs";
@@ -284,6 +284,9 @@ function testSkillSpecConformance() {
   const rejected = runFetch(["--project", "a/b", "--iid", "1", "--host", "example.net"]);
   eq("spec[fetch-mr.mjs]: --host is rejected rather than ignored", rejected.status, 2);
   truthy("spec[fetch-mr.mjs]: the rejection names the offending flag", rejected.stderr.includes("--host"));
+  truthy("spec[fetch-mr.mjs]: the usage line names --out", usage.stderr.includes("[--out <filepath>]"));
+  const validOut = runFetch(["--project", "a/b", "--iid", "1", "--out", "test.json", "--bogus-flag"]);
+  truthy("spec[fetch-mr.mjs]: --out is recognised as a valid flag", !validOut.stderr.includes("unknown flag(s): --out") && validOut.stderr.includes("--bogus-flag"));
 
   // fetch-mr.mjs duplicates MR_QUERY so the skill folder stays importable on its
   // own. Invariant 4 permits that only with a test asserting they agree — this one.
@@ -2456,6 +2459,19 @@ function testMrPayloadTriage() {
   eq("triage[clean MR]: nothing undetermined", clean.undetermined, []);
   eq("triage[clean MR]: parses the ticket key", clean.facts.ticketKey, "BIDAYA-699");
   eq("triage[clean MR]: parses the commit type", clean.facts.commitType, "fix");
+  eq("triage[clean MR]: flags empty without dirty working tree", clean.flags, []);
+
+  const dirtyTree = triageMrPayload({
+    mr: base,
+    workspaceRemote: remote,
+    currentUser: "jane.doe",
+    currentBranch: base.source_branch,
+    dirty: true,
+    dirtyFiles: ["apps/mobile/a.ts", "libs/ui/b.ts"],
+  });
+  truthy("triage[dirty tree]: raises dirty-tree flag", dirtyTree.flags.some((f) => f.code === "dirty-tree"));
+  truthy("triage[dirty tree]: message names modified files", dirtyTree.flags[0].message.includes("apps/mobile/a.ts"));
+  eq("triage[dirty tree]: still proceeds", dirtyTree.proceed, true);
 
   // The observed failure, as a fixture.
   const conflicted = triageMrPayload({
@@ -2673,9 +2689,71 @@ function testDiscussionReconciliation() {
   eq("reconcile: reconciles", r.reconciles, true);
   eq("reconcile: counts resolved threads", r.resolvedThreads, 1);
   eq("reconcile: counts unresolved threads", r.unresolvedThreads, 1);
+  eq("reconcile: exports needsYou matching unresolvedThreads", r.needsYou, 1);
+  eq("reconcile: counts unanswered threads", r.unansweredThreads, 1);
+  eq("reconcile: counts author-replied threads", r.authorRepliedThreads, 0);
+  eq("reconcile: counts reopened threads", r.reopenedThreads, 0);
   truthy("reconcile: builds the count line", r.countLine.includes("3 reviewer comments across 3 threads"));
   falsy("reconcile: count line never reports the raw discussion total", r.countLine.includes("4 threads"));
   truthy("reconcile: reason explains the excluded system-only threads", r.reason.includes("only system notes"));
+
+  // Thread review states: unanswered, author_replied, reopened
+  const reviewDiscussions = [
+    // 1. Unanswered (fresh reviewer comment)
+    { id: "t1", notes: [note(10, "reviewer", { resolvable: true, resolved: false })] },
+    // 2. Author replied last (fixed / described, awaiting reviewer check)
+    {
+      id: "t2",
+      notes: [
+        note(20, "reviewer", { resolvable: true, resolved: false }),
+        note(21, "me", { resolvable: true, resolved: false }),
+      ],
+    },
+    // 3. Re-opened: reviewer replied after author's reply
+    {
+      id: "t3",
+      notes: [
+        note(30, "reviewer", { resolvable: true, resolved: false }),
+        note(31, "me", { resolvable: true, resolved: false }),
+        note(32, "reviewer", { resolvable: true, resolved: false }),
+      ],
+    },
+    // 4. Resolved thread
+    { id: "t4", notes: [note(40, "reviewer", { resolvable: true, resolved: true })] },
+    // 5. Unresolvable general comment
+    { id: "t5", notes: [note(50, "reviewer", { resolvable: false, resolved: false })] },
+  ];
+
+  eq("threadReplyStatus: unanswered", threadReplyStatus(reviewDiscussions[0].notes, "me"), "unanswered");
+  eq("threadReplyStatus: author_replied", threadReplyStatus(reviewDiscussions[1].notes, "me"), "author_replied");
+  eq("threadReplyStatus: reopened", threadReplyStatus(reviewDiscussions[2].notes, "me"), "reopened");
+  eq("threadReplyStatus: resolved", threadReplyStatus(reviewDiscussions[3].notes, "me"), "resolved");
+  eq("threadReplyStatus: unresolvable", threadReplyStatus(reviewDiscussions[4].notes, "me"), "unresolvable");
+  eq("threadReplyStatus: unknown without user", threadReplyStatus(reviewDiscussions[0].notes), "unknown");
+
+  const reviewCounts = reconcileDiscussionCounts({
+    discussions: reviewDiscussions,
+    userNotesCount: 8,
+    currentUser: "me",
+  });
+  eq("reconcile[states]: unresolved threads total", reviewCounts.unresolvedThreads, 3);
+  eq("reconcile[states]: unanswered count", reviewCounts.unansweredThreads, 1);
+  eq("reconcile[states]: author_replied count", reviewCounts.authorRepliedThreads, 1);
+  eq("reconcile[states]: reopened count", reviewCounts.reopenedThreads, 1);
+  eq(
+    "reconcile[states]: sum of states matches unresolvedThreads",
+    reviewCounts.unansweredThreads + reviewCounts.authorRepliedThreads + reviewCounts.reopenedThreads,
+    reviewCounts.unresolvedThreads,
+  );
+
+  const indexed = indexThreadsForReport(reviewDiscussions, "me");
+  eq("indexThreads: emits replyStatus on each row", indexed.map((r) => r.replyStatus), [
+    "unanswered",
+    "author_replied",
+    "reopened",
+    "resolved",
+    "unresolvable",
+  ]);
 
   // It used to end "Reading the referenced files now.", duplicating the brief's own
   // "Next:" row — or contradicting it when a blocker stopped the run before any read.
@@ -3008,6 +3086,7 @@ function testGraphqlNormalization() {
     "sourceBranch",
     "pageInfo",
     "position",
+    "headPipeline",
   ]) {
     truthy(`graphql: MR_QUERY selects ${field}`, MR_QUERY.includes(field));
   }
@@ -3015,6 +3094,18 @@ function testGraphqlNormalization() {
     "graphql: MR_QUERY declares iid as String!, which is why --raw-field is required",
     MR_QUERY.includes("$iid: String!"),
   );
+
+  const withPipeline = normalizeGraphqlMr({
+    iid: "1",
+    headPipeline: {
+      id: "gid://gitlab/Ci::Pipeline/999",
+      status: "SUCCESS",
+      detailedStatus: { label: "passed" },
+    },
+  });
+  eq("graphql: head_pipeline id is stripped of gid", withPipeline.mr.head_pipeline?.id, "999");
+  eq("graphql: head_pipeline status is normalized", withPipeline.mr.head_pipeline?.status, "success");
+  eq("graphql: head_pipeline label is extracted", withPipeline.mr.head_pipeline?.label, "passed");
 }
 
 // ---------- Server transport ----------
@@ -3673,6 +3764,8 @@ function testAuditRegressions() {
     slim.threads.find((t) => t.id === "general").resolvable,
     false,
   );
+  const slimWithUser = slimThreadsForReport(mixed, 40, "r");
+  eq("audit[slim]: emits replyStatus with currentUser", slimWithUser.threads.find((t) => t.id === "open").replyStatus, "author_replied");
   throws("audit[slim]: rejects a non-array", () => slimThreadsForReport(null), "must be an array");
 
   const withUser = reconcileDiscussionCounts({

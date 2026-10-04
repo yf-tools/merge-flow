@@ -105,6 +105,13 @@ export function normalizeGraphqlMr(payload) {
     web_url: gql.webUrl ?? null,
     author: { username: gql.author?.username ?? null },
     assignees: nodes(gql.assignees).map((a) => ({ username: a?.username ?? null })),
+    head_pipeline: gql.headPipeline
+      ? {
+          id: stripGid(gql.headPipeline.id),
+          status: enumToRest(gql.headPipeline.status),
+          label: gql.headPipeline.detailedStatus?.label || gql.headPipeline.detailedStatus?.text || enumToRest(gql.headPipeline.status),
+        }
+      : null,
   };
 
   const discussions = nodes(gql.discussions).map((d) => ({
@@ -145,6 +152,7 @@ export const MR_QUERY = `query($fullPath: ID!, $iid: String!) {
       conflicts mergeStatusEnum detailedMergeStatus draft webUrl
       author { username }
       assignees { nodes { username } }
+      headPipeline { id status detailedStatus { text label } }
       discussions(first: 100) {
         pageInfo { hasNextPage endCursor }
         nodes {

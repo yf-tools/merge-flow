@@ -42,7 +42,7 @@ Don't manufacture a report from nothing. Say there's nothing to review. This alm
 
 ### MR isn't authored by or assigned to the current user (Step 2)
 
-Not necessarily wrong — reviewing on someone else's behalf is a legitimate ask — but it is also the single most common typo outcome, pasting `!490` when you meant `!409`. So it goes on the report's **Flags** row in one line and the user's next reply confirms or corrects course. Waiting on an explicit answer would spend a gate on something that is usually fine.
+Not necessarily wrong — reviewing on someone else's behalf is a legitimate ask — but it is also the single most common typo outcome, pasting `!490` when you meant `!409`. So it goes on the report's **Flags** row in one line and the user's next reply confirms or corrects course. Furthermore, the report's closing authorization list (or blocker question) offers to reassign the MR and Jira ticket to the current user, so taking over the work automatically aligns assignees on approval without an extra back-and-forth.
 
 `triage_mr_payload` decides this from the `current_user` resolved in Step 1. **Omit that input and the check lands in `undetermined` rather than passing** — a check that could not run is not a check that passed.
 
@@ -83,3 +83,23 @@ A ticket sitting in `To Do` needs a decision, but reading comments while it sits
 Getting this backwards produces the worst version of this workflow: a run that interrupts before showing anything, interrupts again, and buries the report the user actually asked for.
 
 Note how cheap the report makes "fold it in." A blocker raised there is one row in a message that was already going out and was already going to wait for a reply, so it adds no pause of its own. That asymmetry is why the default is to fold rather than to stop, and why the stopping cases are enumerated rather than left to judgement.
+
+## Windows PowerShell, quoting, and scratch scripts
+
+Three shell failure modes occur specifically on Windows (`pwsh`):
+
+* **Spaces in filesystem paths:** Windows accounts routinely live in directories with spaces (for example, `C:\Users\First Last\...`). Never construct unquoted command lines or raw string concatenations. Always wrap script paths in double quotes: `node "{scripts['fetch-mr.mjs'].run}" ...`.
+* **PowerShell quoting destroys inline Node scripts:** Running `node -e "..."` in `pwsh` strips backslashes and corrupts inner quotes, causing `SyntaxError: Invalid or unexpected token` or `Invalid string escape`. Never attempt complex inline Node one-liners through PowerShell.
+* **Shell variable assignments and pipelines break under runner wrappers:** Commands chaining `$raw = node ...; $data = $raw | ConvertFrom-Json` fail with parser errors such as `An empty pipe element is not allowed` or `=: The term '=' is not recognized`.
+
+**The clean Windows pattern:**
+1. Use `--out .git/mr-{iid}.json` with `fetch-mr.mjs` to write the full JSON payload directly inside `.git/`. Git ignores this directory and file trees hide it by default, preventing untracked files from dirtying git status while keeping stdout compact.
+2. When parsing or inspecting structured JSON locally, write a standalone script file (e.g. `scratch/inspect.mjs`) and execute `node scratch/inspect.mjs`, or inspect with file-view tools.
+
+## Thread review state misclassification (re-opened vs. author-replied vs. fresh)
+
+Treating every unresolved thread identically as a "fresh" comment produces two severe reporting mistakes:
+1. **Quoting the stale initial note instead of the reviewer's latest objection:** When a thread has been replied to and subsequently re-opened (`replyStatus: "reopened"`), the reviewer's latest comment contains their actual objection (e.g. "revert was incomplete" or "still seeing an issue here"). Quoting only the first note quotes a request that may have already been addressed weeks ago.
+2. **Ignoring that the author already replied:** When the author replied last (`replyStatus: "author_replied"`), the work may already be done and awaiting reviewer verification or ready to resolve on GitLab. Presenting it as a brand-new task confuses the user and risks duplicate work. Always inspect `replyStatus` and call out author-replied threads as candidates for resolution.
+
+

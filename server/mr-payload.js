@@ -331,6 +331,19 @@ function checkDraft(facts, flags) {
   if (facts.draft) pushIssue(flags, "draft", "This MR is a draft.");
 }
 
+function checkDirtyTree(dirty, dirtyFiles, flags) {
+  if (dirty === true && Array.isArray(dirtyFiles) && dirtyFiles.length > 0) {
+    const count = dirtyFiles.length;
+    const sample = count <= 3 ? dirtyFiles.join(", ") : `${dirtyFiles.slice(0, 3).join(", ")} (+${count - 3} more)`;
+    pushIssue(
+      flags,
+      "dirty-tree",
+      `Working tree has ${count} uncommitted modified file(s): ${sample}.`,
+      { count, dirtyFiles },
+    );
+  }
+}
+
 /**
  * Triage a merge request payload.
  *
@@ -344,6 +357,8 @@ function checkDraft(facts, flags) {
  *   instead of guessing. Omitted means undetermined, never "already checked out".
  * @param {string} [input.currentUser] The username `glab` is authenticated as, for
  *   the ownership check. Omitted means undetermined, not "fine".
+ * @param {boolean} [input.dirty] Whether the workspace working tree has uncommitted modifications.
+ * @param {string[]} [input.dirtyFiles] List of uncommitted modified files.
  *
  * @returns {{
  *   blockers: Array<{code: string, message: string, detail?: any}>,
@@ -359,7 +374,7 @@ function checkDraft(facts, flags) {
 export function triageMrPayload(input) {
   // `input ?? {}` rather than `= {}` on the parameter — see hunks.js. The runtime
   // check below is the enforcement; this keeps a no-argument call landing on it.
-  const { mr, workspaceRemote, currentUser, currentBranch } = input ?? {};
+  const { mr, workspaceRemote, currentUser, currentBranch, dirty, dirtyFiles } = input ?? {};
 
   if (mr === null || typeof mr !== "object" || Array.isArray(mr)) {
     throw new Error("mr must be the parsed merge request object");
@@ -378,6 +393,7 @@ export function triageMrPayload(input) {
   checkTicketKey(facts, flags, undetermined);
   checkBranch(facts, flags, undetermined);
   checkDraft(facts, flags);
+  checkDirtyTree(dirty, dirtyFiles, flags);
 
   return { blockers, flags, undetermined, facts, proceed: blockers.length === 0 };
 }

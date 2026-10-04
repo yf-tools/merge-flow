@@ -75,6 +75,38 @@ function threadState(notes) {
 }
 
 /**
+ * Classify a thread's reply / review state from its notes and the current user:
+ * - "resolved": resolvable and resolved on GitLab
+ * - "unresolvable": thread has no resolvable notes (general MR comment)
+ * - "unknown": currentUser was not supplied
+ * - "unanswered": current user has not replied in this thread (fresh reviewer comment)
+ * - "author_replied": current user replied last; no subsequent reviewer comments (ready to resolve or awaiting reviewer)
+ * - "reopened": reviewer replied after current user's reply (reviewer follow-up or re-opened discussion)
+ *
+ * @param {Array<object>} notes
+ * @param {string} [currentUser]
+ */
+export function threadReplyStatus(notes, currentUser) {
+  const feedback = (Array.isArray(notes) ? notes : []).filter((n) => n?.system !== true);
+  const resolvable = feedback.some((n) => n?.resolvable === true);
+  const resolved = resolvable && feedback.every((n) => n?.resolvable !== true || n?.resolved === true);
+
+  if (resolved) return "resolved";
+  if (!resolvable) return "unresolvable";
+  if (!currentUser) return "unknown";
+
+  const ownIndices = [];
+  feedback.forEach((n, idx) => {
+    if (n?.author?.username === currentUser) ownIndices.push(idx);
+  });
+
+  if (ownIndices.length === 0) return "unanswered";
+  const lastOwnIndex = ownIndices[ownIndices.length - 1];
+  if (lastOwnIndex === feedback.length - 1) return "author_replied";
+  return "reopened";
+}
+
+/**
  * The discussions trimmed to what a report and Step 10 consume, with a summary of what
  * was dropped. Lives here, beside the counter, so "resolved" means one thing in this
  * power. Measured need: an untrimmed real payload ran 30,200 of 32,254 bytes and
@@ -89,8 +121,9 @@ function threadState(notes) {
  *
  * @param {Array<object>} discussions Unfiltered `.../discussions` entries.
  * @param {number} [excerptAt] Characters of a resolved note's body to keep.
+ * @param {string} [currentUser] Authenticated GitLab username.
  */
-export function slimThreadsForReport(discussions, excerptAt = 40) {
+export function slimThreadsForReport(discussions, excerptAt = 40, currentUser = null) {
   if (!Array.isArray(discussions)) throw new TypeError("discussions must be an array of discussion objects");
 
   const omitted = { systemOnlyThreads: 0, systemNotes: 0, resolvedBodiesExcerptedAt: excerptAt };
@@ -109,11 +142,14 @@ export function slimThreadsForReport(discussions, excerptAt = 40) {
     const targetNotes = resolved ? feedback.slice(0, 1) : feedback;
     const rawPos = feedback.find((n) => n?.position)?.position ?? null;
     const position = resolved ? undefined : rawPos;
+    const lastNote = feedback[feedback.length - 1];
 
     threads.push({
       id: d?.id ?? null,
       resolvable,
       resolved,
+      replyStatus: threadReplyStatus(all, currentUser),
+      lastAuthor: lastNote?.author?.username ?? null,
       ...(position !== undefined ? { position } : {}),
       notes: targetNotes.map((n) => {
         const body = typeof n?.body === "string" ? n.body : "";
@@ -146,14 +182,16 @@ export function slimThreadsForReport(discussions, excerptAt = 40) {
  * `slimThreadsForReport` or the counter.
  *
  * @param {Array<object>} discussions Unfiltered `.../discussions` entries.
+ * @param {string} [currentUser] Authenticated GitLab username.
  */
-export function indexThreadsForReport(discussions) {
+export function indexThreadsForReport(discussions, currentUser = null) {
   if (!Array.isArray(discussions)) throw new TypeError("discussions must be an array of discussion objects");
 
   const rows = [];
 
   for (const d of discussions) {
-    const { feedback, resolvable, resolved } = threadState(Array.isArray(d?.notes) ? d.notes : []);
+    const all = Array.isArray(d?.notes) ? d.notes : [];
+    const { feedback, resolvable, resolved } = threadState(all);
 
     // Same exclusion as the slimmer: a thread holding only system notes is activity log,
     // not feedback, and counting it here would disagree with `feedbackThreads`.
@@ -166,6 +204,7 @@ export function indexThreadsForReport(discussions) {
       id: d?.id ?? null,
       resolvable,
       resolved,
+      replyStatus: threadReplyStatus(all, currentUser),
       path: position?.new_path ?? position?.old_path ?? null,
       line: position?.new_line ?? position?.old_line ?? null,
       notes: feedback.length,
@@ -267,6 +306,24 @@ export function reconcileDiscussionCounts(input) {
   const threadsTotal = discussions.length;
   const unresolvedThreads = counts.resolvableThreads - counts.resolvedThreads;
 
+  let unansweredThreads = null;
+  let authorRepliedThreads = null;
+  let reopenedThreads = null;
+
+  if (currentUser) {
+    unansweredThreads = 0;
+    authorRepliedThreads = 0;
+    reopenedThreads = 0;
+
+    for (const d of discussions) {
+      const all = Array.isArray(d?.notes) ? d.notes : [];
+      const status = threadReplyStatus(all, currentUser);
+      if (status === "unanswered") unansweredThreads++;
+      else if (status === "author_replied") authorRepliedThreads++;
+      else if (status === "reopened") reopenedThreads++;
+    }
+  }
+
   const countLine = buildCountLine(counts, expectedNotes, reconciles, userNotesCount);
   const reason = buildReason(reconciles, counts, expectedNotes, userNotesCount, threadsTotal);
 
@@ -292,6 +349,10 @@ export function reconcileDiscussionCounts(input) {
     resolvableThreads: counts.resolvableThreads,
     resolvedThreads: counts.resolvedThreads,
     unresolvedThreads,
+    needsYou: unresolvedThreads,
+    unansweredThreads,
+    authorRepliedThreads,
+    reopenedThreads,
     reconciles,
     expectedNotes,
     linkedNoteFound: counts.linkedNoteFound,

@@ -82,6 +82,8 @@ Omit any section that's empty (no skipped items → drop that heading entirely, 
 
 **If the Self-review section offered a discovered resource, treat the user's answer to it as part of this gate.** "Yes, run it" means run it against `git diff --cached`; if it changes anything, loop through definitive validation, stage by name, run the formatter, re-stage, show the new cached diff/evidence, and re-present this summary before committing. A plain "yes" to the commit question with no mention of the checklist means they're fine proceeding without it; don't re-ask.
 
+**Draft MR readiness:** When `mr.draft` is true, include an offer in the closing question: `(Draft MR — mark ready for review on GitLab upon push?)`. If approved, the draft prefix will be cleared after the push.
+
 ### The commit message
 
 Match the convention you saw in `git log` (Step 1), with the type and ticket key from Step 2. If the log history is inconsistent or you can't confidently read a convention from it, fall through in this order before asking:
