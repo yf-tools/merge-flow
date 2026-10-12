@@ -163,7 +163,7 @@ function parseFrontmatter(text) {
  * *quietly* — the skill just stops activating. Same for `compatibility` at 500.
  */
 function testSkillSpecConformance() {
-  const dir = join(ROOT, "skills", "mr-comments");
+  const dir = join(ROOT, "skills", "mr-resolve");
   const raw = readFileSync(join(dir, "SKILL.md"), "utf8");
 
   const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
@@ -177,7 +177,7 @@ function testSkillSpecConformance() {
   };
 
   const name = field("name");
-  eq("spec: name matches the parent directory", name, "mr-comments");
+  eq("spec: name matches the parent directory", name, "mr-resolve");
   truthy("spec: name is 1–64 chars", name.length >= 1 && name.length <= 64);
   truthy("spec: name uses only lowercase alphanumerics and single hyphens", /^[a-z0-9]+(-[a-z0-9]+)*$/.test(name));
 
@@ -366,7 +366,8 @@ function testDeclaredFilesExist() {
     "layout: node_modules stays excluded, so committing the config cannot drag 80 MB in",
     /^node_modules\/$/m.test(readFileSync(join(ROOT, ".gitignore"), "utf8")),
   );
-  truthy("layout: skills/mr-comments/SKILL.md exists", existsSync(join(ROOT, "skills", "mr-comments", "SKILL.md")));
+  truthy("layout: skills/mr-resolve/SKILL.md exists", existsSync(join(ROOT, "skills", "mr-resolve", "SKILL.md")));
+  truthy("layout: skills/mr-reflect/SKILL.md exists", existsSync(join(ROOT, "skills", "mr-reflect", "SKILL.md")));
 
   // A test already guards the skill folder's contents; nothing guarded the power root,
   // and a Kiro session transcript (`sess_<uuid>/`) was found sitting there untracked and
@@ -428,7 +429,7 @@ function testDeclaredFilesExist() {
  *              so moving prose into a reference doesn't drop its assertion.
  */
 function loadSkillCorpus() {
-  const dir = join(ROOT, "skills", "mr-comments");
+  const dir = join(ROOT, "skills", "mr-resolve");
   const skill = readFileSync(join(dir, "SKILL.md"), "utf8");
   const refDir = join(dir, "references");
   const refs = existsSync(refDir)
@@ -507,7 +508,7 @@ function testProgressiveDisclosure() {
   // And the files must actually live there, or the pointers are lies.
   truthy(
     "disclosure: references sit beside SKILL.md per the Agent Skills layout",
-    existsSync(join(ROOT, "skills", "mr-comments", "references")),
+    existsSync(join(ROOT, "skills", "mr-resolve", "references")),
   );
   falsy("disclosure: no stray power-root steering/ directory competing with them", existsSync(join(ROOT, "steering")));
 
@@ -2074,7 +2075,7 @@ function assertLayoutOrdering(docs, m) {
  * Two call sites for one answer is invariant 4's shape, so this pins them together.
  */
 function testLocalTriageParity() {
-  const scriptPath = join(ROOT, "skills", "mr-comments", "scripts", "fetch-mr.mjs");
+  const scriptPath = join(ROOT, "skills", "mr-resolve", "scripts", "fetch-mr.mjs");
   const script = readFileSync(scriptPath, "utf8");
   const server = readFileSync(join(ROOT, "server", "server.js"), "utf8");
 
@@ -2225,7 +2226,7 @@ function testLocalTriageParity() {
  * point is what happens with a hostile `PATH`.
  */
 function testExecutableResolution() {
-  const scriptsDir = join(ROOT, "skills", "mr-comments", "scripts");
+  const scriptsDir = join(ROOT, "skills", "mr-resolve", "scripts");
   /**
    * Comments are stripped before any code-shape assertion. Both scripts *document* the
    * forbidden `execFileSync("git", …)` form in order to explain why it's forbidden, and
@@ -3164,7 +3165,7 @@ function testServerTransport() {
   const word = ["zero", "one", "two", "three", "four", "five", "six"][count] ?? String(count);
   const power = readFileSync(join(ROOT, "POWER.md"), "utf8");
   const readme = readFileSync(join(ROOT, "README.md"), "utf8");
-  const investigating = readFileSync(join(ROOT, "skills", "mr-comments", "references", "investigating.md"), "utf8");
+  const investigating = readFileSync(join(ROOT, "skills", "mr-resolve", "references", "investigating.md"), "utf8");
 
   for (const [label, text] of [
     ["POWER.md", power],
@@ -3785,7 +3786,7 @@ function testAuditRegressions() {
  * so `dirty` regressing from boolean to string would have gone unnoticed.
  */
 function testGitContextScript() {
-  const script = join(ROOT, "skills", "mr-comments", "scripts", "git-context.mjs");
+  const script = join(ROOT, "skills", "mr-resolve", "scripts", "git-context.mjs");
 
   const run = (args) => {
     try {
@@ -3846,7 +3847,7 @@ function testGitContextScript() {
  * 2. Em dashes in the emitted strings rendered as mojibake in the Windows console, on
  *    the very platform most of the first testers are on.
  *
- * It lives at the package root rather than under `skills/mr-comments/scripts/` because a
+ * It lives at the package root rather than under `skills/mr-resolve/scripts/` because a
  * test pins that directory to exactly the two scripts the agent runs mid-workflow, and
  * because this is a setup tool a person runs by hand.
  */
@@ -3947,19 +3948,21 @@ function testPreflight() {
 function testRedaction() {
   const files = [
     ["preflight.mjs", join(ROOT, "preflight.mjs")],
-    ["fetch-mr.mjs", join(ROOT, "skills", "mr-comments", "scripts", "fetch-mr.mjs")],
-    ["git-context.mjs", join(ROOT, "skills", "mr-comments", "scripts", "git-context.mjs")],
+    ["fetch-mr.mjs", join(ROOT, "skills", "mr-resolve", "scripts", "fetch-mr.mjs")],
+    ["git-context.mjs", join(ROOT, "skills", "mr-resolve", "scripts", "git-context.mjs")],
   ].map(([name, path]) => ({ name, text: readFileSync(path, "utf8") }));
 
   // Invariant 4: three copies are only allowed with a test proving they agree.
-  const body = (text) =>
-    text
+  const body = (text) => {
+    const normalized = text.replace(/\r\n/g, "\n");
+    return normalized
       .slice(
-        text.indexOf("function scrubSecrets(text, maxLength = 400) {"),
-        text.indexOf("\n  return out;\n}", text.indexOf("function scrubSecrets")),
+        normalized.indexOf("function scrubSecrets(text, maxLength = 400) {"),
+        normalized.indexOf("\n  return out;\n}", normalized.indexOf("function scrubSecrets")),
       )
       .replace(/\s+/g, " ")
       .trim();
+  };
   for (const f of files) {
     truthy(`redact[${f.name}]: carries scrubSecrets`, f.text.includes("function scrubSecrets(text, maxLength = 400)"));
     truthy(`redact[${f.name}]: its copy was locatable`, body(f.text).length > 200);
@@ -4190,10 +4193,11 @@ function testInputRobustness() {
  * if the source changes, this exercises the change.
  */
 function extractScrubber(source) {
-  const start = source.indexOf("function scrubSecrets(text, maxLength = 400) {");
-  const end = source.indexOf("\n  return out;\n}", start) + "\n  return out;\n}".length;
+  const normalized = source.replace(/\r\n/g, "\n");
+  const start = normalized.indexOf("function scrubSecrets(text, maxLength = 400) {");
+  const end = normalized.indexOf("\n  return out;\n}", start) + "\n  return out;\n}".length;
   // eslint-disable-next-line no-new-func
-  return new Function(`${source.slice(start, end)}\nreturn scrubSecrets;`)();
+  return new Function(`${normalized.slice(start, end)}\nreturn scrubSecrets;`)();
 }
 
 // ---------- Structural router contracts (task 2.1) ----------
@@ -4427,7 +4431,7 @@ const REFERENCE_NAMES = new Set([
 function normalizeReferencePath(path) {
   const value = String(path ?? "").replaceAll("\\\\", "/");
   if (value === "SKILL.md" || value.endsWith("/SKILL.md")) return "SKILL.md";
-  const match = value.match(/(?:^|\/)skills\/mr-comments\/(references\/[a-z-]+\.md)$/);
+  const match = value.match(/(?:^|\/)skills\/mr-resolve\/(references\/[a-z-]+\.md)$/);
   return match?.[1] ?? value.replace(/^.*?(references\/[a-z-]+\.md)$/, "$1");
 }
 
@@ -4673,13 +4677,13 @@ function testWorkflowTimingAndCallableContracts() {
   eq("trace: normal path loads no references", [...result.loaded], []);
 
   const activationLoad = validateWorkflowTrace([
-    { type: "reference_read", path: "skills/mr-comments/SKILL.md", activation: true },
+    { type: "reference_read", path: "skills/mr-resolve/SKILL.md", activation: true },
     ...valid,
   ]);
   eq("trace: one activation-time SKILL.md load is permitted", activationLoad.activationSkillLoadSeen, true);
 
   const knownJiraDirectReads = validateWorkflowTrace([
-    { type: "reference_read", path: "skills/mr-comments/SKILL.md", activation: true },
+    { type: "reference_read", path: "skills/mr-resolve/SKILL.md", activation: true },
     { type: "tool_call", name: "getAccessibleAtlassianResources", turn: 1 },
     { type: "known_jira_key", key: "BIDAYA-2086" },
     { type: "tool_call", name: "getJiraIssue", turn: 1 },
@@ -4691,8 +4695,8 @@ function testWorkflowTimingAndCallableContracts() {
 
   for (const [label, bad, id] of [
     ["normal path rejects reference load", [...valid.slice(0, 1), { type: "reference_read", path: "references/glab-tooling.md", status: "success" }, ...valid.slice(1)], "reference.normal-zero-load"],
-    ["activation load cannot repeat", [{ type: "reference_read", path: "skills/mr-comments/SKILL.md", activation: true }, { type: "reference_read", path: "skills/mr-comments/SKILL.md", activation: true }, ...valid], "reference.pre-report-no-reread"],
-    ["explicit SKILL reread after activation", [...valid, { type: "reference_read", path: "skills/mr-comments/SKILL.md", status: "success", turn: 2 }], "reference.pre-report-no-reread"],
+    ["activation load cannot repeat", [{ type: "reference_read", path: "skills/mr-resolve/SKILL.md", activation: true }, { type: "reference_read", path: "skills/mr-resolve/SKILL.md", activation: true }, ...valid], "reference.pre-report-no-reread"],
+    ["explicit SKILL reread after activation", [...valid, { type: "reference_read", path: "skills/mr-resolve/SKILL.md", status: "success", turn: 2 }], "reference.pre-report-no-reread"],
     ["known Jira key cannot use Rovo search", [{ type: "known_jira_key", key: "BIDAYA-2086" }, { type: "tool_call", name: "atlassian-mcp/search" }, ...valid], "jira.known-key-search"],
     ["GitLab profile command cannot use --jq", [{ type: "command", command: "glab api user --jq .username" }, ...valid], "profile.invalid-jq"],
     ["reporting reread", [...valid.slice(0, 1), { type: "reference_read", path: "references/reporting.md", status: "success" }, ...valid.slice(1)], "reference.pre-report-no-read"],

@@ -1,10 +1,9 @@
-# gitlab-mr-review
+# MergeFlow
 
-A Kiro power for working an existing GitLab merge request: fetch every thread and
-the linked Jira ticket, report the whole picture up front in one message, then on a
-single go-ahead move the ticket into active development, read the code, fix each
-comment, validate, commit, push, reply inline, resolve the threads, return Jira to
-review, and optionally log time.
+The GitLab MR review & conflict resolution system, built as part of the **DevFlow** suite.
+MergeFlow delivers two coordinated engines:
+- **`mr-resolve`**: Actively triages, fixes code, and replies to threads behind safe human approval gates.
+- **`mr-reflect`**: Filters signal-vs-noise on completed MRs for post-merge continuous learning.
 
 **It handles two jobs, not one.** Paste an MR URL and it addresses review
 comments. Paste the same URL and say the MR has conflicts, and it resolves the
@@ -33,7 +32,7 @@ line in the closing list, so one reply covers the fixes and the board.
 
 **The skill states rules, not stories.** `SKILL.md` says what to do and what not to
 do; the runs that produced each rule — with timings and what the user actually said
-— live in `skills/mr-comments/references/failures.md`, which is never needed to
+— live in `skills/mr-resolve/references/failures.md`, which is never needed to
 follow the workflow and is there for when a rule looks arbitrary. Eight other
 reference files hold the step-by-step detail and load only when the workflow points
 at them, so activation doesn't pay for Step 12 on a run that never reaches it.
@@ -139,7 +138,7 @@ This power bundles one MCP server, `mr-review-checks`. After installing — and
 after changing anything under `server/` — reconnect it from the **MCP Servers**
 view in the Kiro feature panel, or the running process keeps serving the old code
 and the old tool list. You should see
-`power-gitlab-mr-review-mr-review-checks` with 5 tools.
+`power-merge-flow-mr-review-checks` with 5 tools.
 
 **Its five tools each prompt for approval the first time they run.** They're
 pure functions over data already fetched — no filesystem, no network — so
@@ -251,7 +250,7 @@ Paste a full GitLab merge request URL, optionally including a `#note_` fragment,
 A fragment such as `#note_123` by itself has no host, project, or MR number, so the
 skill asks for the full MR URL instead of guessing.
 
-For what each step does, see [skills/mr-comments/SKILL.md](skills/mr-comments/SKILL.md).
+For what each step does, see [skills/mr-resolve/SKILL.md](skills/mr-resolve/SKILL.md) and [skills/mr-reflect/SKILL.md](skills/mr-reflect/SKILL.md).
 
 ## License
 

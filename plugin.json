@@ -1,17 +1,19 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "gitlab-mr-review",
+  "name": "merge-flow",
   "version": "1.5.0",
-  "description": "ACTIVATE THIS POWER for a full GitLab merge request URL, requests to handle MR feedback, or requests to resolve a merge conflict on an MR — it covers review comments and conflict resolution behind the same gates. Opens with one complete report on the MR (state, blockers, every unresolved comment in detail, the Jira ticket and its status) and waits there for a single go-ahead covering the checkout, the Jira move, the code reads and the fixes — then fixes, or applies an approved conflict-resolution plan, validates, commits, pushes, replies inline, resolves, returns Jira to review with approval, and optionally logs time. GitLab only; without Atlassian tools, exact Jira identity and status require manual confirmation.",
+  "description": "ACTIVATE THIS POWER for GitLab merge requests, MR feedback reviews, conflict resolution, or post-merge learning. Provides MergeFlow: 'mr-resolve' (actively triages, fixes code, and replies to threads behind safe human approval gates) and 'mr-reflect' (filters signal-vs-noise on completed MRs for post-merge continuous learning). Works with GitLab and optionally Atlassian Jira.",
   "author": {
     "name": "Youssef Fathalla"
   },
-  "repository": "https://github.com/yf-tools/gitlab-mr-review",
+  "repository": "https://github.com/yf-tools/merge-flow",
   "license": "MIT",
   "keywords": [
     "gitlab",
     "merge-request",
-    "mr-comments",
+    "merge-flow",
+    "mr-resolve",
+    "mr-reflect",
     "review-comments",
     "code-review",
     "merge-request-url",

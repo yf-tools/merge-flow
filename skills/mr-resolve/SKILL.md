@@ -1,6 +1,6 @@
 ---
-name: mr-comments
-description: End-to-end gated workflow for working on an existing GitLab merge request, including review comments and conflict-first resolution. Fetches the MR, discussions, git context and Jira status, emits one complete first report, then waits for approval before checkout, reads, edits, publication, replies and Jira writes. Use when handling MR comments or resolving a merge conflict.
+name: mr-resolve
+description: Actively triages, fixes code, and replies to threads on GitLab merge requests, including conflict-first resolution. Fetches the MR, discussions, git context and Jira status, emits one complete first report, then waits for approval before checkout, reads, edits, publication, replies and Jira writes. Use when handling MR comments or resolving a merge conflict.
 license: MIT
 compatibility: GitLab only - GitHub and Bitbucket pull requests are out of scope. Needs network access, git, an authenticated glab or GitLab MCP server, Node.js for the bundled scripts and Atlassian MCP tooling for Jira.
 metadata:

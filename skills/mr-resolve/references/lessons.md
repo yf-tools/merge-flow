@@ -41,7 +41,7 @@ Rules recovered from real merge-request review comments on this repo.
   A rule violated this often _while already in context_ is usually worded too vaguely
   to act on — say so and propose a sharper wording rather than just complying harder.
 
-Counts are maintained by the `mr-comments` skill. Don't edit them by hand.
+Counts are maintained by the `mr-resolve` skill. Don't edit them by hand.
 
 ## Repeat offenders
 

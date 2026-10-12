@@ -106,7 +106,7 @@ function negotiateProtocolVersion(requested) {
 
 /** Absolute path to one bundled script. */
 function scriptPath(file) {
-  return powerPath(`../skills/mr-comments/scripts/${file}`);
+  return powerPath(`../skills/mr-resolve/scripts/${file}`);
 }
 
 /** A ready-to-run, space-safe command for one bundled script. */
@@ -290,7 +290,7 @@ const TOOL_HANDLERS = {
     const script = (file) => ({ path: scriptPath(file), run: scriptCommand(file) });
     return {
       powerRoot: powerPath("../"),
-      scriptsDir: powerPath("../skills/mr-comments/scripts/"),
+      scriptsDir: powerPath("../skills/mr-resolve/scripts/"),
       scripts: { "fetch-mr.mjs": script("fetch-mr.mjs"), "git-context.mjs": script("git-context.mjs") },
       note: "Computed from this server's own module location, not verified against the filesystem. Forward slashes work on every platform Node runs on, including Windows.",
     };

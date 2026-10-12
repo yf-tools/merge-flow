@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Setup check for gitlab-mr-review. Run this once, before your first merge request.
+ * Setup check for MergeFlow. Run this once, before your first merge request.
  *
  *   node preflight.mjs [--repo <path-to-your-project>] [--json] [--redact]
  *
@@ -14,7 +14,7 @@
  * wrong and what it will cost. It changes nothing: no writes, no network beyond
  * `glab auth status`, no git mutations.
  *
- * Lives at the package root rather than under `skills/mr-comments/scripts/`: those two
+ * Lives at the package root rather than under `skills/mr-resolve/scripts/`: those two
  * are workflow steps the agent runs mid-task, and a test pins that directory to exactly
  * those two. This is a setup tool a person runs by hand.
  *
@@ -383,7 +383,7 @@ function parseToolList(stdout) {
  * make a live GitLab call.
  */
 function checkScripts() {
-  const dir = join(ROOT, "skills", "mr-comments", "scripts");
+  const dir = join(ROOT, "skills", "mr-resolve", "scripts");
   checkGitContext(join(dir, "git-context.mjs"));
   checkFetchMr(join(dir, "fetch-mr.mjs"));
 }
@@ -544,7 +544,7 @@ function detailLines(text) {
 }
 
 function render() {
-  const lines = ["", "gitlab-mr-review preflight", ""];
+  const lines = ["", "MergeFlow preflight", ""];
   for (const group of ["Environment", "Required", "MCP config", "Notes"]) {
     const rows = checks.filter((c) => c.group === group);
     if (rows.length === 0) continue;

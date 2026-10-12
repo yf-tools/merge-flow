@@ -1,12 +1,14 @@
 ---
-name: "gitlab-mr-review"
-displayName: "GitLab MR Review"
+name: "merge-flow"
+displayName: "MergeFlow"
 description: "ACTIVATE whenever the user pastes a full GitLab merge request URL (optionally with a '#note_' fragment), asks to handle MR feedback, or asks to resolve a merge conflict on an MR. Covers both jobs behind the same gates. Opens within two turns with one complete report — state, blockers, every unresolved comment in detail, the Jira ticket and its status — and waits there for a single go-ahead covering the checkout, the Jira move, the code reads and the fixes. Then fixes, or applies an approved conflict-resolution plan, validates, commits, pushes, replies inline, resolves, returns Jira to review with approval, and optionally logs time."
 keywords:
   [
     "gitlab",
     "merge-request",
-    "mr-comments",
+    "merge-flow",
+    "mr-resolve",
+    "mr-reflect",
     "review-comments",
     "code-review",
     "merge-request-url",
@@ -25,13 +27,12 @@ author: "Youssef Fathalla"
 
 # What this power does
 
-`gitlab-mr-review` handles the review-comment loop on a merge request that
-already exists: someone reviewed your code, left comments, and you need to
-work through them without missing one, without guessing at project
-conventions, and without moving Jira or other shared state without explicit
-approval.
+`MergeFlow` handles the review-comment loop and conflict resolution on a GitLab merge request,
+powered by two specialized engines:
+- **`mr-resolve`**: Actively triages, fixes code, and replies to threads behind safe human approval gates.
+- **`mr-reflect`**: Filters signal-vs-noise for post-merge continuous learning to prevent recurring mistakes.
 
-It has 14 primary numbered steps (0–13), plus the lane decision at Step 0b and six possible approval gates: the opening report or its conflict-lane equivalent (which also carries the Jira active-status decision), Step 6b when the code contradicts that report or an answered question turns into new scope, final staged summary plus Jira review-transition consent, pre-push choice when needed, reply preview, and lesson preview only when the user opts in. See [skills/mr-comments/SKILL.md](skills/mr-comments/SKILL.md)
+It has 14 primary numbered steps (0–13), plus the lane decision at Step 0b and six possible approval gates: the opening report or its conflict-lane equivalent (which also carries the Jira active-status decision), Step 6b when the code contradicts that report or an answered question turns into new scope, final staged summary plus Jira review-transition consent, pre-push choice when needed, reply preview, and lesson preview only when the user opts in. See [skills/mr-resolve/SKILL.md](skills/mr-resolve/SKILL.md)
 for the full workflow. In short: parse the MR URL, fetch the MR, every review
 comment and the local git state as one batch, then reconcile the counts and read
 the Jira ticket as a second batch. Verify the ticket silently — stopping only if it's terminal,
