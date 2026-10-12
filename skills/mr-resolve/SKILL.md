@@ -20,6 +20,15 @@ This skill is resident when activated. **Activation establishes resident state.*
 4. **A fact stated in two places will drift.** Keep each rule in one owner.
 5. **Open-ended work needs a stopping rule.** If verification is bounded and still inconclusive, report that and stop.
 
+## Dry-Run / Test Mode
+
+Activated ONLY when the user explicitly includes the flag `--dry-run` or `--test-mode` (or phrases like `simulate only`). Never trigger on generic words like "test", "testing", or "write tests":
+
+- Execute Steps 0–4 silently to profile and fetch the MR, discussions, git state, and Jira details.
+- Emit the first report in Step 5 and **MANDATORY**: invoke the `ask_question` tool with friendly choices and write-in support.
+- Once the user responds to the question modal, **do not execute any mutating actions** (no git checkout, no file edits, no commits, no pushes, no GitLab replies or thread resolutions, no Jira updates).
+- Output a clear `[Dry-Run Summary]` detailing what files would be modified, what replies would be posted, and stop immediately.
+
 ## Resident run state and loading protocol
 
 At activation, establish resident state without opening this file again:
@@ -67,12 +76,13 @@ The lane changes the middle of the run. It never changes which gates exist. For 
 | --- | --- | --- |
 | **1 — Profile** | GitLab host, project identity, current branch, dirty state and authenticated username | bundled git context and the bundled fetch result, which obtains GitLab identity through `glab auth status` |
 | **2 — Fetch MR** | MR state, mergeability, all discussions, triage, reconciled counts and pagination | one complete bundled result |
-| **3 — Verify Jira** | exactly one `(Jira hostname, ticket key)` pair, exact status and reachable active target | `getAccessibleAtlassianResources`, then direct issue/status and transition reads for the known key |
+| **3 — Verify Jira** | exactly one `(Jira hostname, ticket key)` pair, exact status and reachable active target | `getAccessibleAtlassianResources`, then direct issue/status read (`fields: ["status", "summary"]`) for the known key; transition lookup deferred to Batch 3 if needed |
 | **4 — Classify** | one classification per unresolved thread from comment text alone | ✅ Fix, 🔵 Nitpick, 💬 Question or ⚠️ Disagree |
 
 A wrong project, terminal MR state, zero comments, incomplete pagination or unreconciled counts blocks. `undetermined` is not a pass. A no-ticket result is a flag only when the resident triage rules say it is safe; **No key at all is a hard stop** when Jira identity is required. Never claim current code, a verified fix, a proposed diff or completed handling before Step 6 reads the approved files. Resolved discussions are counted only as not re-checked against project code.
 
 **Thread review state (`replyStatus`):**
+
 - **`unanswered`:** Fresh reviewer comment, you haven't replied yet.
 - **`author_replied`:** You replied last (describing fix/explanation), no reviewer reply since. Note in report: already answered by you, awaiting reviewer verification or ready to resolve on GitLab.
 - **`reopened`:** Reviewer replied *after* your reply (e.g. follow-up question or indicating a fix was incomplete). Always quote the reviewer's *latest follow-up comment* rather than the original stale comment so the report captures the current objection.
@@ -80,13 +90,13 @@ A wrong project, terminal MR state, zero comments, incomplete pagination or unre
 
 ### Four batches, not fifteen turns
 
-- **Batch 1 (Concurrent):** Dispatch `{scripts["fetch-mr.mjs"].run}` and `getAccessibleAtlassianResources()` concurrently in your very first turn — do not serialize them. Always pass `--out <path>` (e.g. `--out .git/mr-{iid}.json`) to save full discussions to disk and receive a compact summary on stdout, preventing command runner buffer truncation on MRs with long threads and keeping the workspace tree completely clean. The bundled fetch script already obtains authenticated GitLab identity through `glab auth status` and collects git state (`branch`, `remote`, `dirty`); do not run the unsupported profile command `glab api user --jq .username`.
-- **Batch 2 (Concurrent):** **Known Jira key direct-read route:** when one key is settled, call `getJiraIssue` and `getTransitionsForJiraIssue` together in one turn. In this same turn, read the discussion payload from `.git/mr-{iid}.json` via `view_file` in one call without line slices. Do not use `atlassian-mcp/search`, Rovo, or any discovery search for that known Jira key:
+- **Batch 1 (Concurrent):** Dispatch `{scripts["fetch-mr.mjs"].run}` and `getAccessibleAtlassianResources()` concurrently in your very first turn — do not serialize them. Always pass `--out <path>` (e.g. `--out .git/mr-{iid}.json`) to save full discussions to disk and receive a compact summary or inlined payload on stdout, keeping the workspace tree clean. With adaptive output, if discussions are under ~20KB, `fetch-mr.mjs` inlines them directly on stdout (`inlined: true`) while still writing the backup file. The bundled fetch script already obtains authenticated GitLab identity through `glab auth status` and collects git state (`branch`, `remote`, `dirty`); do not run the unsupported profile command `glab api user --jq .username`.
+- **Batch 2 (Concurrent):** **Known Jira key direct-read route:** when one key is settled, call `getJiraIssue` with `fields: ["status", "summary"]`. If Batch 1 did not inline discussions (`inlined: false`), read the discussion payload from `.git/mr-{iid}.json` via `view_file` in this same turn; if discussions were already inlined on stdout in Batch 1 (`inlined: true`), skip `view_file`. Do not call `getTransitionsForJiraIssue` in Batch 2 — defer it to Batch 3 alongside checkout if a start transition is needed. Do not use `atlassian-mcp/search`, Rovo, or any discovery search for that known Jira key:
   - `cloudId`: The resource `id` from Batch 1's `getAccessibleAtlassianResources` (**never the GitLab hostname**).
   - `issueIdOrKey`: `triage.facts.ticketKey` from Batch 1.
-  - **CRITICAL:** Pass `fields: ["status", "summary"]` to `getJiraIssue`. Without `fields`, Jira returns hundreds of unneeded fields that overflow into `output.txt` and cost extra read turns. Skip reading `output.txt` in this turn: if the ticket is already in active development (e.g. `In Progress`), no start transition is needed. If the ticket is pre-active (`To Do` / `Backlog`), propose moving to `In Progress` in the report authorization list without spending an extra turn reading `output.txt`; defer reading the transition ID from `output.txt` to Batch 3 alongside checkout. Emit the report immediately.
+  - **CRITICAL:** Pass `fields: ["status", "summary"]` to `getJiraIssue`. Without `fields`, Jira returns hundreds of unneeded fields that overflow into `output.txt` and cost extra read turns. If the ticket is already in active development (e.g. `In Progress`), no start transition is needed. If the ticket is pre-active (`To Do` / `Backlog` / `To Review`), propose moving to `In Progress` in the report authorization list without checking transitions yet. Emit the report immediately.
 - **Emit Report:** The first report follows immediately as the first user-facing output; no introductory message, reference reads, or same-turn continuation.
-- **Batch 3 (After reply):** Checkout, approved Jira start transition and deferred profile reads. **This checkout is batch 3 — after the report and the reply to it, not before.**
+- **Batch 3 (After reply):** Checkout, call `getTransitionsForJiraIssue` (if the approved start transition is needed) to execute `transitionJiraIssue`, and deferred profile reads. **This checkout is batch 3 — after the report and the reply to it, not before.**
 - **Batch 4 (After checkout):** Read the approved discussion files.
 
 ### Authoritative retrieval and forbidden callable family
@@ -144,9 +154,28 @@ Reviewer ({discussion.author}):
 {closing.blockerReplacement}
 ```
 
-The template's semantic roles are stable even when prose is reworded. `{counts.needsYou} + {counts.feedbackThreads}` must account for all feedback, and **Report `feedbackThreads`, never `threadsTotal`.** Use the tool's `countLine` verbatim. **Resolve state and `{counts.needsYou}` are not quite the same split.** When `mr.draft` is true, render this visible non-blocking flag: `Draft MR — review may proceed, but it is not ready for merge completion.` A blocker question replaces the default question; it does not add a second question. A conflicted or zero-comment MR uses the resident blocker question and leaves `references/conflicts.md` unloaded, but must preserve the reassign offer (if not assigned to you) and the Jira start transition (`To Do` → `In Progress`) alongside checkout and conflict resolution in the proposed action. If the user replies “resolve conflicts first”, that reply starts the later conflict-first lane.
+When `mr.draft` is true, render this visible non-blocking flag: `Draft MR — review may proceed, but it is not ready for merge completion.`
 
-**What a bare “go ahead” covers: batches 3 and 4, checkout, the Jira transition the report named (moving To Do or To Review to In Progress), reassigning MR and Jira ticket if not assigned to you, and implementation of the ✅ Fix / 🔵 Nitpick items.** 💬 Question / ⚠️ Disagree items remain unresolved and outside that authorization. Commits, pushes, replies, resolutions, Jira finish writes, worklogs and lesson writes remain gated. The Jira move is a line in that list, not a second question. **The stop is ending the turn, not announcing that you are about to.**
+🛑 **Gate: User Confirmation Required Before Proceeding.**
+
+- **If `ask_question` tool is available in your environment (Antigravity, Claude Code):** You MUST invoke `ask_question` with the question structure below.
+- **Graceful Fallback (Kiro, Cursor, Windsurf, VS Code):** If `ask_question` is NOT registered in your active tools, format the questions clearly in chat markdown with numbered options, end your turn, and wait for the user's reply before proceeding.
+
+**Question Structure (Modal Carousel or Chat Fallback):**
+Provide distinct questions (`1 of 2` or `1 of 3`):
+
+1. **Question 1 (Action & Scope):**
+   - **Recommended option:** `(Recommended) Proceed with fixing approved comments and checkout branch`
+   - Alternate options: `Resolve merge conflicts first`, `I will review comments manually`, or `Cancel`.
+2. **Question 2 (Jira Status & Assignment):**
+   - **Recommended option:** `(Recommended) Move ticket to In Progress and ensure assigned to me`
+   - Alternate options: `Leave Jira status unchanged`.
+
+- Keep phrasing friendly and conversational. Avoid robotic AI markers like brackets, em dashes, or artificial formulaic tags.
+- Note: When using `ask_question`, it automatically provides a write-in text field by default on every question. In chat fallback, mention that the user can pick a number or type custom feedback/instructions (such as approving only specific comment IDs).
+- Do not proceed to Step 6 or subsequent steps until the user answers the modal or replies in chat.
+
+**What a bare “go ahead” covers: batches 3 and 4, checkout, the Jira transition the report named (moving To Do or To Review to In Progress), reassigning MR and Jira ticket if not assigned to you, and implementation of the ✅ Fix / 🔵 Nitpick items.** 💬 Question / ⚠️ Disagree items remain unresolved and outside that authorization. Commits, pushes, replies, resolutions, Jira finish writes, worklogs and lesson writes remain gated. The Jira move is a line in that list, not a second question.
 
 ## Post-report index
 

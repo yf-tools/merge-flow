@@ -34,7 +34,7 @@
 // quiet without adding a package. Same pattern as server.js.
 const proc = /** @type {any} */ (globalThis).process;
 // @ts-ignore -- no @types/node by design
-import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 // @ts-ignore -- no @types/node by design
 import { promisify } from "node:util";
 // @ts-ignore -- no @types/node by design
@@ -93,30 +93,54 @@ if (unknown.length > 0) {
 }
 
 const outPath = flag("out");
+const MAX_INLINE_BYTES = 20 * 1024; // 20 KB adaptive inline threshold
+
+function ensureDir(filePath) {
+  const dir = dirname(filePath);
+  if (dir && dir !== "." && !fileExists(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+}
+
+function parseAndFormat(text) {
+  try {
+    const parsed = JSON.parse(text);
+    return { parsed, formatted: JSON.stringify(parsed, null, 2) };
+  } catch {
+    return { parsed: null, formatted: text };
+  }
+}
+
+function writeOutputFile(targetPath, text) {
+  ensureDir(targetPath);
+  const { parsed, formatted } = parseAndFormat(text);
+  const content = formatted.endsWith("\n") ? formatted : formatted + "\n";
+  writeFileSync(targetPath, content, "utf8");
+  return parsed;
+}
 
 function saveAndEmit({ fullText, summaryObj }) {
-  if (outPath) {
-    try {
-      const dir = dirname(outPath);
-      if (dir && dir !== "." && !fileExists(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      let formattedText = fullText;
-      try {
-        formattedText = JSON.stringify(JSON.parse(fullText), null, 2);
-      } catch {
-        // preserve raw text if not valid JSON
-      }
-      writeFileSync(outPath, formattedText.endsWith("\n") ? formattedText : formattedText + "\n", "utf8");
-    } catch (err) {
-      proc.stderr.write(`failed to write output to ${outPath}: ${err?.message ?? err}\n`);
-      proc.exit(1);
-    }
-    const summary = summaryObj ? { writtenTo: outPath, ...summaryObj } : { writtenTo: outPath };
-    proc.stdout.write(JSON.stringify(summary) + "\n");
+  if (!outPath) {
+    proc.stdout.write(fullText.endsWith("\n") ? fullText : fullText + "\n");
     return;
   }
-  proc.stdout.write(fullText.endsWith("\n") ? fullText : fullText + "\n");
+
+  let parsed = null;
+  try {
+    parsed = writeOutputFile(outPath, fullText);
+  } catch (err) {
+    proc.stderr.write(`failed to write output to ${outPath}: ${err?.message ?? err}\n`);
+    proc.exit(1);
+  }
+
+  const isSmall = Buffer.byteLength(fullText, "utf8") <= MAX_INLINE_BYTES;
+  if (isSmall && parsed && typeof parsed === "object") {
+    proc.stdout.write(JSON.stringify({ writtenTo: outPath, inlined: true, ...parsed }) + "\n");
+    return;
+  }
+
+  const baseSummary = summaryObj ?? {};
+  proc.stdout.write(JSON.stringify({ writtenTo: outPath, inlined: false, ...baseSummary }) + "\n");
 }
 
 const project = flag("project");
@@ -362,39 +386,39 @@ function sleepSync(ms) {
  * budget is one retry to cover a genuine blip, not a general resilience layer — a host that
  * is actually down should fail fast and let the run report it.
  */
-async function glab(args, maxAttempts = 2) {
-  let lastErr;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      // An args array, not a shell string: the query contains braces, spaces and
-      // newlines, and no quoting scheme survives all three across shells.
-      // `--hostname` is glab's own spelling; ours is `--instance` for the reason in the
-      // header. The rename stops at this boundary.
-      const res = await execFileAsync(glabBin, instance ? [...args, "--hostname", instance] : args, {
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-      });
-      return res.stdout;
-    } catch (err) {
-      lastErr = err;
-      const raw = (err.stderr || err.stdout || err.message || String(err)).trim();
-      const transient = TRANSIENT.some((s) => raw.toLowerCase().includes(s));
-      if (attempt >= maxAttempts || !transient) break;
-
+async function executeGlab(args, attempt, maxAttempts) {
+  try {
+    // An args array, not a shell string: the query contains braces, spaces and
+    // newlines, and no quoting scheme survives all three across shells.
+    // `--hostname` is glab's own spelling; ours is `--instance` for the reason in the
+    // header. The rename stops at this boundary.
+    const res = await execFileAsync(glabBin, instance ? [...args, "--hostname", instance] : args, {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return res.stdout;
+  } catch (err) {
+    const raw = (err.stderr || err.stdout || err.message || String(err)).trim();
+    const transient = TRANSIENT.some((s) => raw.toLowerCase().includes(s));
+    if (attempt < maxAttempts && transient) {
       // Said out loud: a silent stall here is indistinguishable from a slow network in the
       // transcript, and this file's whole job is to be the fast part of batch 1.
       const backoffMs = 500;
       proc.stderr.write(`note: glab ${args.slice(0, 2).join(" ")} hit a transient failure, retrying once in ${backoffMs}ms\n`);
       await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      return executeGlab(args, attempt + 1, maxAttempts);
     }
-  }
 
-  // Another program's output, so bounded in both length and content before it lands
-  // in this process's stderr and from there in the transcript.
-  const detail = scrubSecrets((lastErr.stderr || lastErr.stdout || lastErr.message || String(lastErr)).trim());
-  proc.stderr.write(`glab ${args.slice(0, 2).join(" ")} failed: ${detail}\n`);
-  proc.exit(1);
+    // Another program's output, so bounded in both length and content before it lands
+    // in this process's stderr and from there in the transcript.
+    const detail = scrubSecrets((err.stderr || err.stdout || err.message || String(err)).trim());
+    proc.stderr.write(`glab ${args.slice(0, 2).join(" ")} failed: ${detail}\n`);
+    proc.exit(1);
+  }
+}
+
+async function glab(args, maxAttempts = 2) {
+  return executeGlab(args, 1, maxAttempts);
 }
 
 /**
@@ -466,11 +490,11 @@ function emitTriaged({ mr, discussions, hasNextPage, endCursor, ctx, checks: act
   });
 }
 
-const checksPromise = has("raw") ? Promise.resolve(null) : loadChecks();
+const checks = has("raw") ? null : await loadChecks();
 const contextPromise = localContext();
 
 if (has("rest")) {
-  const [checks, ctx] = await Promise.all([checksPromise, contextPromise]);
+  const ctx = await contextPromise;
   if (!checks && !has("raw")) {
     proc.stderr.write(
       "note: server/ modules not reachable from this skill folder — printing the raw payload.\n" +
@@ -546,7 +570,7 @@ if (has("rest")) {
     ]);
   })();
 
-  const [checks, ctx, out] = await Promise.all([checksPromise, contextPromise, queryPromise]);
+  const [ctx, out] = await Promise.all([contextPromise, queryPromise]);
 
   if (!checks && !has("raw")) {
     proc.stderr.write(

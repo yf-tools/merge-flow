@@ -67,8 +67,19 @@ This summary is the document the user approves. Every number in it must come fro
 
 **Commit message:** `{type}({TICKET-KEY}): address MR review comments`
 
-Ready to commit and push? (yes / let me review first / adjust message)
+Ready to commit and push?
 ```
+
+Ready to commit and push?
+```
+
+🛑 **Gate: User Confirmation Required Before Committing.**
+- **If `ask_question` tool is available (Antigravity, Claude Code):** Invoke `ask_question` with clean choices:
+  - `(Recommended) Approve and commit`
+  - `Let me review the diff first`
+  - `Adjust commit message`
+  (The user can also type custom instructions in the write-in text box).
+- **Graceful Fallback (Kiro, Cursor, Windsurf, VS Code):** If `ask_question` is NOT available, present the choices clearly in chat markdown, end your turn, and wait for the user's reply before proceeding.
 
 Omit any section that's empty (no skipped items → drop that heading entirely, don't write "none") — **except Staged, Self-review, and Jira after replies, which always appear**. Staged proves you read the real diff; Self-review proves review happened; Jira proves ticket status was checked and makes the final shared-state decision explicit. Dropping any of the three makes the gate unfalsifiable — a summary that omits Self-review reads exactly like one where the pass came back clean.
 

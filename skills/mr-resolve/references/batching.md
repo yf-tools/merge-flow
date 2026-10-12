@@ -34,7 +34,7 @@ It gathers `workspace_remote` and `current_user` itself, so the two checks that 
 
 **`discussions` is deliberately trimmed, and `omitted` says how.** System-only threads and system notes are dropped, resolved threads keep a 160-character excerpt instead of a full body, and `position` is hoisted to the thread. Unresolved threads keep every body whole, because those are the only ones Step 5 quotes.
 
-**That took a real MR's payload from 41,752 bytes to 12,798.** The full version overran the tool-result limit, and the run responded by writing it to a file, reading it twice and deleting it: five extra calls, about 45 seconds. When an MR has extensive discussions that risk stdout buffer limits, pass `--out .git/mr-{iid}.json`: the script writes the full payload inside `.git/` (which Git ignores and hides from your working tree) and returns a compact summary to stdout, preventing buffer truncation and keeping git status clean.
+**That took a real MR's payload from 41,752 bytes to 12,798.** The full version overran the tool-result limit, and the run responded by writing it to a file, reading it twice and deleting it: five extra calls, about 45 seconds. When an MR has extensive discussions that risk stdout buffer limits, pass `--out .git/mr-{iid}.json`: the script writes the full payload inside `.git/` (which Git ignores and hides from your working tree). With adaptive output, if the serialized discussions JSON is under ~20KB, `fetch-mr.mjs` also emits the full payload directly on stdout (`inlined: true`) alongside `writtenTo` (.git/mr-{iid}.json as backup cache), allowing the agent in Batch 2 to skip `view_file` entirely while still protecting against buffer overflows on large MRs (`inlined: false`).
 
 ## Why the git reads are a script
 

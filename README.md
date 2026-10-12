@@ -5,6 +5,8 @@ MergeFlow delivers two coordinated engines:
 - **`mr-resolve`**: Actively triages, fixes code, and replies to threads behind safe human approval gates.
 - **`mr-reflect`**: Filters signal-vs-noise on completed MRs for post-merge continuous learning.
 
+> 🚀 **Team Getting Started**: Follow the step-by-step [Team Setup & Installation Guide](SETUP.md) to set up Git, `glab`, and Jira MCP in under 5 minutes.
+
 **It handles two jobs, not one.** Paste an MR URL and it addresses review
 comments. Paste the same URL and say the MR has conflicts, and it resolves the
 conflict instead — behind the same gates, with the triage report swapped for a

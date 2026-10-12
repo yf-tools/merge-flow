@@ -93,13 +93,13 @@ Three shell failure modes occur specifically on Windows (`pwsh`):
 * **Shell variable assignments and pipelines break under runner wrappers:** Commands chaining `$raw = node ...; $data = $raw | ConvertFrom-Json` fail with parser errors such as `An empty pipe element is not allowed` or `=: The term '=' is not recognized`.
 
 **The clean Windows pattern:**
+
 1. Use `--out .git/mr-{iid}.json` with `fetch-mr.mjs` to write the full JSON payload directly inside `.git/`. Git ignores this directory and file trees hide it by default, preventing untracked files from dirtying git status while keeping stdout compact.
 2. When parsing or inspecting structured JSON locally, write a standalone script file (e.g. `scratch/inspect.mjs`) and execute `node scratch/inspect.mjs`, or inspect with file-view tools.
 
 ## Thread review state misclassification (re-opened vs. author-replied vs. fresh)
 
 Treating every unresolved thread identically as a "fresh" comment produces two severe reporting mistakes:
+
 1. **Quoting the stale initial note instead of the reviewer's latest objection:** When a thread has been replied to and subsequently re-opened (`replyStatus: "reopened"`), the reviewer's latest comment contains their actual objection (e.g. "revert was incomplete" or "still seeing an issue here"). Quoting only the first note quotes a request that may have already been addressed weeks ago.
 2. **Ignoring that the author already replied:** When the author replied last (`replyStatus: "author_replied"`), the work may already be done and awaiting reviewer verification or ready to resolve on GitLab. Presenting it as a brand-new task confuses the user and risks duplicate work. Always inspect `replyStatus` and call out author-replied threads as candidates for resolution.
-
-

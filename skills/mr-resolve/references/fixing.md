@@ -42,7 +42,7 @@ attribute_staged_hunks
   conflict_files:  {files changed resolving an approved merge conflict, if any}
 ```
 
-**Three inputs, three different questions — never merge them.** `approved_files` traces to a reviewer's comment; `formatter_files` only ever holds paths the formatter's own output *named*; `conflict_files` holds an approved merge resolution. Passing a guess, or filing a resolution under `approved_files`, launders the guess into the tool's output — which then reads as the tool's verdict rather than yours.
+**Three inputs, three different questions — never merge them.** `approved_files` traces to a reviewer's comment; `formatter_files` only ever holds paths the formatter's own output _named_; `conflict_files` holds an approved merge resolution. Passing a guess, or filing a resolution under `approved_files`, launders the guess into the tool's output — which then reads as the tool's verdict rather than yours.
 
 ## Reading `attribute_staged_hunks`' output
 

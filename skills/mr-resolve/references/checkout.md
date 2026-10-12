@@ -7,6 +7,7 @@ Read this when Step 5's report has been answered, not before. Everything here is
 **This checkout is batch 3 — after the report and the reply to it, not before.** Nothing before Step 5 needs local state, and Step 2 decides whether this step should run at all: a zero-comment MR stops the workflow, and stopping _after_ switching the user's branch means you changed their working tree for a run that ended immediately. So the order is fetch, reconcile, verify, report, wait, _then_ check out. The report's closing list already named the switch, so the go-ahead covers it.
 
 **Check the dirty-tree status from Step 1 first — it gates every path below.**
+
 - **If switching away from a different branch with a dirty tree:** Stop and offer only: stay on the current branch, or create a named stash with the exact recovery command (`git stash pop`). Do not switch branches while dirty without stashing.
 - **If already on `{source_branch}` with a dirty tree:** Check whether the modified files overlap with the files under review. If they overlap, these uncommitted hunks are often work-in-progress fixes for the comments: inspect `git diff` during Batch 4 to see if they already address or touch the feedback, rather than blindly forcing a stash or discarding them. If they touch unrelated files, keep them intact and edit only the approved review files.
 - Do not propose committing unrelated changes onto this MR branch, and never offer discard as a convenience path; if the user explicitly requests deletion, show per-file diffs and reconfirm first.
@@ -48,7 +49,7 @@ When the report flagged that the MR was not authored by or assigned to you (`not
 
 This is the moment the board's claim becomes true — work is starting now, so the status changes now. It happens in **Step 6, batched with the checkout and before any code is read**, whenever the ticket is in `To Do`, `Backlog`, or `To Review` and the user approved the start transition:
 
-1. Call `transitionJiraIssue` with the exact transition recorded in Step 3 (moving `To Do` / `To Review` to active development / `In Progress`).
+1. Call `getTransitionsForJiraIssue` to resolve the transition ID for active development (`In Progress`), then call `transitionJiraIssue` with that ID (reading `output.txt` if redirected).
 2. Confirm the resulting `status.name` is exactly the approved target. A successful API response is not evidence on its own — but **when the transition response itself names the resulting status, that _is_ the read-back**; re-read only when it doesn't.
 3. **If the transition or the verification fails, stop.** Report the exact error, and wait for the user to either apply it manually and confirm the resulting status, or tell you to proceed without it. Do not start editing on the assumption it worked, and do not retry through a different transition. There is no fail-open synchronization waiver.
 4. If the user declined, or chose "leave it", record that and move on. Say nothing further about it — they already decided.

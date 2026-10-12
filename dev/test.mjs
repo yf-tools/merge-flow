@@ -4490,9 +4490,14 @@ function residentBatch(text, startMarker, endMarker, contractId) {
 function validateKnownJiraDirectRoute(text) {
   const batch1 = residentBatch(text, "- **Batch 1 (Concurrent):**", "- **Batch 2 (Concurrent):**", "profile.invalid-jq");
   const batch2 = residentBatch(text, "- **Batch 2 (Concurrent):**", "- **Emit Report:**", "jira.known-key-direct-read");
-  const requiredDirectReads = ["getJiraIssue", "getTransitionsForJiraIssue"];
+  const batch3 = residentBatch(text, "- **Batch 3 (After reply):**", "- **Batch 4 (After checkout):**", "jira.deferred-transition");
+  const requiredDirectReads = ["getJiraIssue"];
   const missing = requiredDirectReads.filter((tool) => !batch2.includes(tool));
   if (missing.length) throw new Error(`jira.known-key-direct-read: resident Batch 2 is missing ${missing.join(", ")}`);
+
+  if (!batch3.includes("getTransitionsForJiraIssue")) {
+    throw new Error("jira.deferred-transition: resident Batch 3 must defer getTransitionsForJiraIssue to checkout turn");
+  }
 
   const directRoute = batch2.replace(/\s+/g, " ").toLowerCase();
   if (
@@ -4757,8 +4762,13 @@ function testWorkflowTimingAndCallableContracts() {
   for (const [label, mutation, id] of [
     [
       "missing Batch 2 direct Jira read",
-      docs.skill.replace("call `getJiraIssue` and `getTransitionsForJiraIssue` together", "call `getJiraIssue` together"),
+      docs.skill.replaceAll("getJiraIssue", "searchJiraIssues"),
       "jira.known-key-direct-read",
+    ],
+    [
+      "missing Batch 3 transition lookup",
+      docs.skill.replaceAll("getTransitionsForJiraIssue", "transitionJiraIssue"),
+      "jira.deferred-transition",
     ],
     [
       "missing known-key Rovo prohibition",
