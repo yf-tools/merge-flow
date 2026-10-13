@@ -198,6 +198,7 @@ npm test
 ```
 
 This validates:
+
 - **Server Initialization**: Proves the bundled `mr-review-checks` MCP server boots over stdio and responds to JSON-RPC handshakes with all 5 tools.
 - **Decision Modules**: Tests Jira ticket key parsing from conventional titles, path normalization across remote styles, discussion thread reconciliation, and git hunk attribution.
 - **Script Resolution**: Verifies that `locate_bundled_scripts` returns executable paths to `fetch-mr.mjs` and `git-context.mjs`.

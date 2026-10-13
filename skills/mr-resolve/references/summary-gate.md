@@ -71,7 +71,8 @@ Ready to commit and push?
 ```
 
 Ready to commit and push?
-```
+
+```text
 
 🛑 **Gate: User Confirmation Required Before Committing.**
 - **If `ask_question` tool is available (Antigravity, Claude Code):** Invoke `ask_question` with clean choices:

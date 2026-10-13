@@ -107,9 +107,11 @@ Load the entire plugin directory or add the bundled MCP server:
 - **Load directly (recommended):**
   - Run with `claude --plugin-dir <path-to-merge-flow>`
 - **Or register the bundled MCP server manually:**
+
   ```bash
   claude mcp add mr-review-checks node "<path-to-merge-flow>/server/server.js"
   ```
+
   And copy `skills/mr-resolve` and `skills/mr-reflect` into `.claude/skills/` or `%USERPROFILE%\.claude\skills\`.
 
 ### Option D: In Cursor / Windsurf / VS Code
