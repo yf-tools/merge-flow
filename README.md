@@ -8,6 +8,43 @@ MergeFlow delivers two coordinated engines:
 
 > 🚀 **Team Getting Started**: Follow the step-by-step [Team Setup & Installation Guide](SETUP.md) to set up Git, `glab`, and Jira MCP in under 5 minutes.
 
+---
+
+## 🎯 Why MergeFlow? (Problems We Faced & How It Solves Them)
+
+### 🔍 `mr-resolve` (Review Comments Mode) — Addressing Code Reviews
+* ❌ **The Problem We Faced:**
+  * When asking AI to fix review comments, it rushes into editing code immediately before reading all discussions, leading to partial fixes, missed feedback, and hallucinated replies.
+  * In large MRs with 30+ comments, unresolved threads get lost and developers think everything is done when it isn't.
+  * Jira tickets are left abandoned in *In Review* while MR discussions are being solved.
+* 💡 **How It Solves It:**
+  * **Single-turn triage:** Uses a fast GraphQL query (62% faster than REST) to fetch every discussion thread with zero pagination loss.
+  * **Human approval gate:** Emits **one complete, readable report first** that lists every unresolved comment with its exact file and line number—and **stops to wait for your approval** before touching a single line of code.
+  * **All-in-one closure:** Edits the code, replies to reviewer threads, resolves the discussions, and updates the Jira ticket in one cohesive step.
+
+---
+
+### 🔀 `mr-resolve` (Merge Conflicts Mode) — Resolving Conflicts
+* ❌ **The Problem We Faced:**
+  * Developers manually merge `main` into their branch and make blind guesswork picks, accidentally deleting someone else’s changes.
+  * AI assistants trying to merge branches directly in a dirty directory, leaving half-resolved conflict markers (`<<<<<<< HEAD`) in files.
+* 💡 **How It Solves It:**
+  * **Zero-risk inspection:** Analyzes the conflicted hunks and target branch *without touching your local working tree*.
+  * **Clear resolution plan:** Displays both sides of every conflict in the chat report and proposes the exact resolution plan for you to review and approve first.
+
+---
+
+### 🧠 `mr-reflect` — Post-Merge Continuous Learning
+* ❌ **The Problem We Faced:**
+  * The team makes the same code review mistakes (naming conventions, missed edge-case tests, styling rules) sprint after sprint because feedback is forgotten as soon as an MR is merged.
+  * Trying to solve this by dumping dozens of ad-hoc rules into `.agents/rules/`, `.kiro/rules/`, or `.cursor/rules/` creates "rule bloat" that slows down the AI and causes conflicting steering.
+* 💡 **How It Solves It:**
+  * **Strict signal-vs-noise filter:** Analyzes reviewer feedback on merged MRs, discarding subjective styling arguments, conversational chatter, and one-off hacks.
+  * **The Repeat Counter (`x1` $\rightarrow$ `x2` $\rightarrow$ `x3`):** Logs recurring technical mistakes into a feedback ledger (`feedback-review.md`). When a mistake is first identified, it is tagged with `[x1]`. If the same pattern recurs in subsequent MRs, it increments to `[x2]`, `[x3]`.
+  * **Data-driven rule promotion:** Once a mistake proves itself to be a repeated pattern across the team, it is promoted directly into the workspace rules (`.agents/rules/`, `.kiro/rules/`, `.cursor/rules/`, or `AGENTS.md`) as a permanent project guideline—ensuring both human engineers and AI assistants never repeat the mistake.
+
+---
+
 **It handles two jobs, not one.** Paste an MR URL and it addresses review
 comments. Paste the same URL and say the MR has conflicts, and it resolves the
 conflict instead — behind the same gates, with the triage report swapped for a

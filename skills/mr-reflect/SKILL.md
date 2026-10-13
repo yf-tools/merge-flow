@@ -63,15 +63,23 @@ Evaluate every reviewer feedback item against the qualification criteria:
 | **One-off Workarounds** | Temporary hotfixes, deprecated library quirks scheduled for deletion | **Noise (Discard)** |
 | **Conversational Banter** | Non-actionable comments, emoji reactions, ambiguous nitpicks | **Noise (Discard)** |
 
-### Step 3 — Rule Formulation
+### Step 3 — Recurrence Tracking & Rule Formulation
 
 For each high-signal item:
 
-- Check existing rules in `.agents/rules/`, `AGENTS.md`, `GEMINI.md`, or skill lesson files to verify it is not already covered.
-- Formulate a succinct guideline:
-  - **Pattern:** Clear, positive directive.
-  - **Anti-Pattern:** Concrete snippet or description of the mistake.
-  - **Context:** Why this matters in this repository.
+1. **Check the Feedback Ledger (`feedback-review.md`):**
+   - Check if the project has a feedback ledger (e.g. `.agents/rules/feedback-review.md`, `.kiro/rules/feedback-review.md`, or `.cursor/rules/feedback-review.md`).
+   - If an existing entry matches this pattern, increment its recurrence counter: `[x1] -> [x2] -> [x3]`.
+   - If it is new, register it with count `[x1]` along with the MR reference, anti-pattern snippet, and correct pattern.
+
+2. **Evaluate Promotion Threshold:**
+   - **New patterns (`[x1]`):** Logged in the ledger for historical tracking without bloating active rules immediately.
+   - **Recurring patterns (`[x2]+`):** High priority candidates to be promoted directly into the team's active ruleset (`.agents/rules/*.md`, `.kiro/rules/*.md`, `.cursor/rules/*.md`, or `AGENTS.md`) to permanently prevent future recurrence across the team and AI assistants.
+
+3. **Formulate Succinct Guideline:**
+   - **Pattern:** Clear, positive directive.
+   - **Anti-Pattern:** Concrete snippet or description of the mistake.
+   - **Context:** Why this matters in this repository.
 
 ### Step 4 — Reflection Report (BLOCKING GATE)
 
@@ -85,20 +93,23 @@ Present the structured report to the user and stop:
 - Discarded as noise: {noise_count}
 - Qualified as high-signal: {signal_count}
 
-#### Proposed Preventative Rules
+#### Ledger Updates & Proposed Rules
 
-1. **{Rule Title}**
-   - **Trigger/Context:** {Where this applies}
-   - **Instruction:** {What the agent/developer should do}
-   - **Target File:** `{path_to_rules_file}`
+1. **{Pattern Title}** `[x2 - Recurring]` *(Promote to Active Rules)*
+   - **Anti-Pattern:** {Description / snippet of recurring mistake}
+   - **Guideline:** {What developers and AI assistants should do instead}
+   - **Target File:** `.agents/rules/{topic}.md` (or `.kiro/rules/`, `.cursor/rules/`, `AGENTS.md`)
+
+2. **{New Pattern}** `[x1 - Logged]`
+   - **Logged in:** `feedback-review.md` for frequency tracking.
 
 ---
-Would you like to persist these rules to your workspace guidelines?
+Would you like to persist these updates to your feedback ledger and promote recurring rules?
 ```
 
-### Step 5 — Rule Persistence
+### Step 5 — Rule & Ledger Persistence
 
 Upon explicit confirmation:
 
-- Append or update the rule in the target guidelines file (e.g., `.agents/rules/` or project guidelines).
-- Increment recurrence counters for repeat findings if tracking via lessons.
+- Update or append the entries in the target feedback ledger (`feedback-review.md`).
+- For recurring items approved for promotion (`[x2]+`), write or update the focused rule in the user's workspace rule directory (`.agents/rules/`, `.kiro/rules/`, `.cursor/rules/`, or `AGENTS.md`).
