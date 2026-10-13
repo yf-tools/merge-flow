@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "merge-flow",
-  "version": "1.5.0",
-  "description": "ACTIVATE THIS POWER for GitLab merge requests, MR feedback reviews, conflict resolution, or post-merge learning. Provides MergeFlow: 'mr-resolve' (actively triages, fixes code, and replies to threads behind safe human approval gates) and 'mr-reflect' (filters signal-vs-noise on completed MRs for post-merge continuous learning). Works with GitLab and optionally Atlassian Jira.",
+  "version": "1.0.0",
+  "description": "ACTIVATE THIS PLUGIN for GitLab merge requests, MR feedback reviews, conflict resolution, or post-merge learning. Provides MergeFlow: 'mr-resolve' (actively triages, fixes code, and replies to threads behind safe human approval gates) and 'mr-reflect' (filters signal-vs-noise on completed MRs for post-merge continuous learning). Works with GitLab and optionally Atlassian Jira. MANDATORY NEXT STEP: immediately after activating this plugin, load and follow the skill instructions for 'mr-resolve' or 'mr-reflect' BEFORE any other action (view the corresponding skills/*/SKILL.md file or invoke the skill) -- including checking out branches, modifying code, or replying to threads.",
   "author": {
     "name": "Youssef Fathalla"
   },

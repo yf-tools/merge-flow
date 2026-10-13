@@ -23,7 +23,7 @@ A root-cause fix exists but is deliberately not used here: setting `GITLAB_HOST`
 
 Don't reach for a terminal `glab` call as a first move either. It works, since the shell does run in the repo, but it throws away structured output and forces manual JSON parsing. Use it only when `glab_api` genuinely can't express the call.
 
-**If the failure looks like setup rather than tooling — no `glab` on PATH, an authentication error, no GitLab MCP server configured — say so and point the user at `node preflight.mjs --repo .` from the power's install directory, rather than diagnosing it a call at a time.** It checks `git`, `glab`, `glab auth status`, the bundled server and both scripts in one pass, and names what each missing piece will cost. Two things it deliberately cannot check are whether Kiro has connected to the bundled server and whether the tool prompts were accepted, so it prints those as reminders instead of claiming them.
+**If the failure looks like setup rather than tooling — no `glab` on PATH, an authentication error, no GitLab MCP server configured — say so and point the user at `node preflight.mjs --repo .` from the plugin's install directory, rather than diagnosing it a call at a time.** It checks `git`, `glab`, `glab auth status`, the bundled server and both scripts in one pass, and names what each missing piece will cost. Two things it deliberately cannot check are whether your IDE has connected to the bundled server and whether the tool prompts were accepted, so it prints those as reminders instead of claiming them.
 
 ## 2. The MCP `jq` flag is silently ignored — filtering needs the shell
 

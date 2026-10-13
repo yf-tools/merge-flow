@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mr-review-checks": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/server/server.js"]
+    }
+  }
+}

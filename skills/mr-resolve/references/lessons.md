@@ -22,7 +22,7 @@ Skip, without asking:
 
 ## The file
 
-Target `.kiro/steering/review-feedback-patterns.md`.
+Target `.kiro/steering/review-feedback-patterns.md` (or your IDE's workspace rules location, e.g. `.agents/rules/review-feedback-patterns.md` for Antigravity and portable agent setups, `.claude/rules/` or `CLAUDE.md` for Claude Code, or `.cursor/rules/` for Cursor).
 
 **The file must explain its own notation.** The session that reads it is working on a
 new feature and has never seen this skill — `×3` with no legend gets ignored or
@@ -116,7 +116,7 @@ Store the append-only `[sources: ...]` list beside each rule and deduplicate ide
 ## Present and stop
 
 ```text
-Proposed changes to .kiro/steering/review-feedback-patterns.md:
+Proposed changes to review-feedback-patterns.md:
 
   NEW    [SCSS] Use the directional radius mixin, never shorthand — RTL breaks. ×1
   BUMP   [DI] Prefer inject() over constructor injection.  ×2 → ×3
@@ -135,9 +135,9 @@ If the user skips, drop it — don't re-raise it next run.
 
 **Approval covers exactly the previewed lines.** A "yes" to two count bumps authorises two count bumps. It does not authorise touching anything else in the file while you happen to have it open. In particular, do not bundle in an unpreviewed edit and explain it afterwards — an approval gate that ships changes the user never saw is the same failure as Step 8 committing unattributed hunks, in the file with the longest blast radius.
 
-### Frontmatter and inclusion mode get their own gate
+### Steering frontmatter and inclusion mode get their own gate
 
-Changing the file's `inclusion` mode is not a rule edit — it changes **whether these rules load at all**, which outranks every individual rule in it. It also cuts against the file's purpose: the rules exist to be present _while new code is being written_, and `inclusion: auto` means they only load when a request already looks review-shaped, which is the case where you'd have caught the problem anyway.
+In environments supporting steering frontmatter (such as Kiro), changing the file's `inclusion` mode is not a rule edit — it changes **whether these rules load at all**, which outranks every individual rule in it. It also cuts against the file's purpose: the rules exist to be present _while new code is being written_, and `inclusion: auto` means they only load when a request already looks review-shaped, which is the case where you'd have caught the problem anyway.
 
 So: never fold a frontmatter change into a count-bump preview. If you think the mode is wrong, finish the approved bumps, then raise it separately as its own question with the tradeoff stated in one line each way:
 

@@ -95,9 +95,17 @@ if (unknown.length > 0) {
 const outPath = flag("out");
 const MAX_INLINE_BYTES = 20 * 1024; // 20 KB adaptive inline threshold
 
+function dirExists(p) {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function ensureDir(filePath) {
   const dir = dirname(filePath);
-  if (dir && dir !== "." && !fileExists(dir)) {
+  if (dir && dir !== "." && !dirExists(dir)) {
     mkdirSync(dir, { recursive: true });
   }
 }
@@ -365,17 +373,6 @@ const TRANSIENT = [
 ];
 
 /**
- * Block for `ms` without spending CPU. `execFileSync` makes this whole file synchronous, so
- * there is nothing to await — but a `while (Date.now() < until) {}` spin costs a full core
- * for the entire backoff. Measured: 800ms of spin burns 797ms of CPU, `Atomics.wait` burns
- * 0ms for the same wall time. Pinning a core while waiting out a network blip competes with
- * the very connection being retried.
- */
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
  * Run `glab` and return stdout, retrying only a transient network failure.
  *
  * **Retrying is only safe because every call in this file is a read** — one GraphQL query,
@@ -537,7 +534,7 @@ if (has("rest")) {
 } else {
   const queryPromise = (async () => {
     const token = proc.env?.GITLAB_TOKEN || proc.env?.GITLAB_ACCESS_TOKEN;
-    if (token && instance) {
+    if (typeof fetch === "function" && token && instance) {
       try {
         const res = await fetch(`https://${instance}/api/graphql`, {
           method: "POST",

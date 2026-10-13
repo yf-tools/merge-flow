@@ -91,6 +91,7 @@ Look wherever this project keeps agent-facing instructions. Common homes, as **h
 
 - `.kiro/steering/` — steering files, each with frontmatter that usually carries a `description` and an `inclusion` mode
 - `.kiro/skills/` or a `skills/` directory — each skill's `SKILL.md` has a frontmatter `description` stating when to use it
+- `.agents/rules/` or `GEMINI.md` — Antigravity rule files and project instructions
 - Repo-root agent instructions under whatever name this project uses — `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.cursor/rules/*.mdc`, `.github/copilot-instructions.md`, and equivalents
 - Ordinary contributor docs that often carry the same content — `CONTRIBUTING.md`, `docs/`, a PR/MR template
 

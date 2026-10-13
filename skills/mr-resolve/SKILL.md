@@ -4,7 +4,7 @@ description: Actively triages, fixes code, and replies to threads on GitLab merg
 license: MIT
 compatibility: GitLab only - GitHub and Bitbucket pull requests are out of scope. Needs network access, git, an authenticated glab or GitLab MCP server, Node.js for the bundled scripts and Atlassian MCP tooling for Jira.
 metadata:
-  version: "1.5.0"
+  version: "1.0.0"
   author: Youssef Fathalla
 ---
 

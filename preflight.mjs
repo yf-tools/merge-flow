@@ -25,7 +25,7 @@
 // package. Same pattern as server.js and both bundled scripts.
 const proc = /** @type {any} */ (globalThis).process;
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -300,7 +300,7 @@ function checkGlabAuth(glab) {
   // Where the token comes from matters for a team, not just whether one exists. A token
   // exported from a shell profile is invisible to an editor launched from a desktop
   // launcher, which inherits no interactive shell, so it works in a terminal and fails
-  // in Kiro, with the same `glab` binary either way.
+  // in your IDE, with the same `glab` binary either way.
   // Only the variable NAME is captured, never the value: the class stops at the colon,
   // and glab prints the token itself after one.
   const source = /Token found in ([^:\n]+)/i.exec(text);
@@ -320,14 +320,14 @@ function checkGlabAuth(glab) {
     "glab auth",
     "warn",
     detail,
-    "That variable has to be set for the process Kiro runs in, not only your terminal. If Kiro was started from a desktop launcher it inherits no shell profile, so `glab auth login` storing a token in config or keyring is the more portable setup.",
+    "That variable has to be set for the process your IDE runs in, not only your terminal. If your IDE (Antigravity, Claude Code, Kiro, Cursor) was started from a desktop launcher it inherits no shell profile, so `glab auth login` storing a token in config or keyring is the more portable setup.",
   );
 }
 
 /**
  * Proves the bundled server's *code* runs here and still advertises its five tools.
  *
- * It cannot prove Kiro has connected to it. That lives in the editor's MCP client rather
+ * It cannot prove your IDE has connected to it. That lives in the editor's MCP client rather
  * than on disk, which is exactly why the reconnect reminder is in the closing notes.
  */
 function checkServer() {
@@ -462,13 +462,37 @@ function wrap(text, width) {
 
 /**
  * Neither of these is bundled, and both are read from the user's own config. Matching is
- * by name and command text, so this reports what it recognised rather than claiming a
- * capability it has not exercised.
+ * by name and command text across supported IDEs (Antigravity, Claude Code, Kiro, Cursor,
+ * Windsurf).
  */
-function checkMcpConfig() {
+function checkMcpConfig(glabBinInfo) {
+  const xdgConfig = proc.env?.XDG_CONFIG_HOME || join(homedir(), ".config");
   const sources = [
-    { label: "user", path: join(homedir(), ".kiro", "settings", "mcp.json") },
-    { label: "workspace", path: join(repo, ".kiro", "settings", "mcp.json") },
+    { label: "kiro (user)", path: join(homedir(), ".kiro", "settings", "mcp.json") },
+    { label: "kiro (workspace)", path: join(repo, ".kiro", "settings", "mcp.json") },
+    { label: "antigravity (user)", path: join(homedir(), ".gemini", "antigravity", "mcp_config.json") },
+    { label: "antigravity (user-alt)", path: join(homedir(), ".gemini", "mcp_config.json") },
+    { label: "antigravity (workspace)", path: join(repo, ".gemini", "antigravity", "mcp_config.json") },
+    { label: "antigravity (workspace-alt)", path: join(repo, ".gemini", "mcp_config.json") },
+    {
+      label: "claude desktop (user)",
+      path:
+        proc.platform === "win32"
+          ? join(proc.env?.APPDATA || join(homedir(), "AppData", "Roaming"), "Claude", "claude_desktop_config.json")
+          : proc.platform === "darwin"
+            ? join(homedir(), "Library", "Application Support", "Claude", "claude_desktop_config.json")
+            : join(xdgConfig, "Claude", "claude_desktop_config.json"),
+    },
+    { label: "claude (user)", path: join(homedir(), ".claude", "mcp.json") },
+    { label: "claude (state)", path: join(homedir(), ".claude.json") },
+    { label: "claude (workspace)", path: join(repo, ".mcp.json") },
+    { label: "cursor (user)", path: join(homedir(), ".cursor", "mcp.json") },
+    { label: "cursor (workspace)", path: join(repo, ".cursor", "mcp.json") },
+    { label: "windsurf (user)", path: join(homedir(), ".codeium", "windsurf", "mcp_config.json") },
+    { label: "windsurf (workspace)", path: join(repo, ".windsurf", "mcp.json") },
+    { label: "vscode (workspace)", path: join(repo, ".vscode", "mcp.json") },
+    { label: "workspace", path: join(repo, "mcp.json") },
+    { label: "plugin", path: join(ROOT, "mcp.json") },
   ];
 
   const found = [];
@@ -476,22 +500,41 @@ function checkMcpConfig() {
     if (!existsSync(s.path)) continue;
     const parsed = tryParse(readFileSync(s.path, "utf8"));
     if (!parsed) {
-      add("MCP config", s.label, "warn", `${s.path} is not valid JSON`, "Kiro will ignore this file.");
+      add("MCP config", s.label, "warn", `${s.path} is not valid JSON`, "The editor will ignore this file.");
       continue;
     }
     for (const [name, cfg] of Object.entries(parsed.mcpServers ?? {})) {
       const text = `${name} ${cfg?.command ?? ""} ${(cfg?.args ?? []).join(" ")}`.toLowerCase();
       found.push({ name, text, origin: s.label, disabled: cfg?.disabled === true });
     }
+    for (const proj of Object.values(parsed.projects ?? {})) {
+      for (const [name, cfg] of Object.entries(proj?.mcpServers ?? {})) {
+        const text = `${name} ${cfg?.command ?? ""} ${(cfg?.args ?? []).join(" ")}`.toLowerCase();
+        found.push({ name, text, origin: `${s.label} (project)`, disabled: cfg?.disabled === true });
+      }
+    }
+    for (const [name, cfg] of Object.entries(parsed.servers ?? {})) {
+      const text = `${name} ${cfg?.command ?? ""} ${(cfg?.args ?? []).join(" ")}`.toLowerCase();
+      found.push({ name, text, origin: s.label, disabled: cfg?.disabled === true });
+    }
   }
 
-  matchServer(
-    found,
-    "glab",
-    /glab|gitlab/,
-    "fail",
-    "Every GitLab call in the workflow goes through this. Nothing will work without it.",
-  );
+  // Antigravity registers MCP server tools as subdirectories under ~/.gemini/antigravity/mcp/
+  const agyMcpDir = join(homedir(), ".gemini", "antigravity", "mcp");
+  if (existsSync(agyMcpDir)) {
+    try {
+      const entries = readdirSync(agyMcpDir, { withFileTypes: true });
+      for (const e of entries) {
+        if (e.isDirectory()) {
+          found.push({ name: e.name, text: e.name.toLowerCase(), origin: "antigravity", disabled: false });
+        }
+      }
+    } catch {
+      // Unreadable directory; skip quietly
+    }
+  }
+
+  matchGlabServer(found, glabBinInfo);
   matchServer(
     found,
     "atlassian",
@@ -501,10 +544,39 @@ function checkMcpConfig() {
   );
 }
 
+function matchGlabServer(found, glabBinInfo) {
+  const hits = found.filter((s) => /glab|gitlab/.test(s.text));
+  const live = hits.filter((s) => !s.disabled);
+  if (live.length > 0) {
+    const describe = hits.map((s) => `"${s.name}" (${s.origin}${s.disabled ? ", DISABLED" : ""})`).join(", ");
+    add("MCP config", "glab", "ok", `${describe}, matched by name, capability not exercised`);
+    return;
+  }
+
+  // When glab CLI is installed and valid, bundled scripts execute it directly
+  if (glabBinInfo?.path && !glabBinInfo?.pinError) {
+    add(
+      "MCP config",
+      "glab",
+      "ok",
+      "using glab CLI directly (bundled scripts; GitLab MCP not required)",
+    );
+    return;
+  }
+
+  const consequence = "Every GitLab call in the workflow goes through this. Install glab CLI or configure a GitLab MCP server.";
+  if (hits.length > 0) {
+    const describe = hits.map((s) => `"${s.name}" (${s.origin}, DISABLED)`).join(", ");
+    add("MCP config", "glab", "fail", `${describe}, all disabled`, consequence);
+  } else {
+    add("MCP config", "glab", "fail", "no server found matching this in your IDE MCP config", consequence);
+  }
+}
+
 function matchServer(found, label, pattern, missingStatus, consequence) {
   const hits = found.filter((s) => pattern.test(s.text));
   if (hits.length === 0) {
-    add("MCP config", label, missingStatus, "no server found matching this in either mcp.json", consequence);
+    add("MCP config", label, missingStatus, "no server found matching this in your IDE MCP config", consequence);
     return;
   }
   const live = hits.filter((s) => !s.disabled);
@@ -575,8 +647,8 @@ function render() {
   lines.push(
     "",
     "Two things this cannot check for you:",
-    "  1. Whether Kiro has connected to the bundled server. After installing, and after any",
-    "     change under server/, reconnect it from the MCP Servers view or the running process",
+    "  1. Whether your IDE has connected to the bundled server. After installing, and after any",
+    "     change under server/, reconnect it from your IDE's MCP settings or the running process",
     "     keeps serving the old code and the old tool list.",
     "  2. Tool approval. The five tools each prompt the first time. They are pure functions",
     "     over data already fetched, with no filesystem or network access, so choosing",
@@ -594,7 +666,7 @@ const glab = checkBinary("glab", "GLAB_PATH", ["--version"], "The MR fetch canno
 checkGlabAuth(glab);
 checkServer();
 checkScripts();
-checkMcpConfig();
+checkMcpConfig(glab);
 checkPathHygiene([git, glab]);
 
 const failedCount = checks.filter((c) => c.status === "fail").length;

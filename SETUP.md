@@ -68,7 +68,7 @@ Add the `atlassian-mcp` definition to your IDE's MCP settings (e.g. Antigravity,
 
 > [!TIP]
 > The first time this server runs, a browser window will open asking you to sign in to your Atlassian account and authorize access. No manual API tokens or passwords needed.
-> 
+>
 > For official IDE setup guides across Cursor, VS Code, and others, refer to the [Official Atlassian MCP Documentation](https://support.atlassian.com/jira-software-cloud/docs/use-atlassian-mcp-server-with-an-ide/).
 
 ---
@@ -79,11 +79,19 @@ Add the `atlassian-mcp` definition to your IDE's MCP settings (e.g. Antigravity,
 
 Copy the `merge-flow` directory into your personal plugin configuration folder:
 
-```text
-~/.gemini/config/plugins/merge-flow
-```
+- **Windows:**
 
-Or use the Plugins Manager UI in Antigravity to add the folder.
+  ```text
+  %USERPROFILE%\.gemini\config\plugins\merge-flow
+  ```
+
+- **macOS / Linux:**
+
+  ```text
+  ~/.gemini/config/plugins/merge-flow
+  ```
+
+Or use the Plugins Manager UI in Antigravity to add the folder directly.
 
 ### Option B: In Kiro
 
@@ -92,9 +100,21 @@ In Kiro's Powers panel:
 - Click **Add power from folder** (or clone the repository locally).
 - Select the `merge-flow` directory.
 
-### Option C: In Cursor / Windsurf / VS Code
+### Option C: In Claude Code
 
-Copy the `merge-flow` folder into your project root or your global AI prompt directory.
+Load the entire plugin directory or add the bundled MCP server:
+
+- **Load directly (recommended):**
+  - Run with `claude --plugin-dir <path-to-merge-flow>`
+- **Or register the bundled MCP server manually:**
+  ```bash
+  claude mcp add mr-review-checks node "<path-to-merge-flow>/server/server.js"
+  ```
+  And copy `skills/mr-resolve` and `skills/mr-reflect` into `.claude/skills/` or `%USERPROFILE%\.claude\skills\`.
+
+### Option D: In Cursor / Windsurf / VS Code
+
+- Copy the `merge-flow` folder into your project root or reference `skills/mr-resolve/SKILL.md` and `skills/mr-reflect/SKILL.md` from your `.cursorrules`, `.windsurfrules`, or `AGENTS.md`.
 
 ---
 

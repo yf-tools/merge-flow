@@ -2,6 +2,7 @@
 
 The GitLab MR review & conflict resolution system, built as part of the **DevFlow** suite.
 MergeFlow delivers two coordinated engines:
+
 - **`mr-resolve`**: Actively triages, fixes code, and replies to threads behind safe human approval gates.
 - **`mr-reflect`**: Filters signal-vs-noise on completed MRs for post-merge continuous learning.
 
@@ -79,19 +80,18 @@ give different answers for the same MR.
 Its distinguishing feature is that **nothing project-specific is hardcoded.**
 The workflow derives package management, validation, framework, monorepo and
 commit conventions from the repo, then derives Jira identity and exact active/
-review status names from the MR and Jira APIs. This power has no dependency on
-another Kiro power and runs standalone.
+review status names from the MR and Jira APIs. This plugin has no dependency on
+other plugins and runs standalone.
 
 **GitLab only.** The review-thread resolve/reply API is GitLab-specific, and
 this skill stops and tells you rather than improvising equivalent behavior
 against a GitHub or Bitbucket remote.
 
-This power is packaged to the [Agent Plugins](https://agent-plugins.org/) 1.0
-standard (`plugin.json` + `skills/`) rather than anything Kiro-specific. Kiro
-is what this was built and tested against, but the same package format is
-also read natively by VS Code / GitHub Copilot. Support in other clients
-isn't verified here — check what a given client actually supports before
-assuming it'll load.
+This plugin is packaged to the [Agent Plugins](https://agent-plugins.org/) 1.0
+standard (`plugin.json` + `skills/`) rather than anything IDE-specific. Built
+and tested across Antigravity, Kiro, Claude Code, Cursor, Windsurf, and VS Code
+on Windows, Linux, and macOS. Detailed setup instructions for each IDE are in
+[SETUP.md](SETUP.md).
 
 ## Safety behaviour
 
@@ -117,35 +117,34 @@ What it will and won't do on its own:
 
 ## Install
 
-**From a GitHub URL** (Kiro's Powers panel → **Add power from GitHub** →
-paste the repository URL). For a private repo, whoever you paste it as needs
-read access — see the repo's own access settings.
+See the comprehensive [Team Setup & Installation Guide](SETUP.md) for step-by-step installation instructions across **Antigravity**, **Claude Code**, **Kiro**, **Cursor**, **Windsurf**, and **VS Code**.
 
-**From a local checkout** — this also works for a private repo you don't
-have push access to, once someone's given you read and you've cloned it:
+### Quick start by IDE
 
-```bash
-git clone <repository-url>
-```
+- **Antigravity**: Copy to `%USERPROFILE%\.gemini\config\plugins\merge-flow` (Windows) or `~/.gemini/config/plugins/merge-flow` (macOS / Linux), or use the Plugins Manager UI.
+- **Claude Code**: Load with `claude --plugin-dir <path-to-merge-flow>`, or run `claude mcp add mr-review-checks node "<path>/server/server.js"` and copy skills to `.claude/skills/`.
+- **Kiro**: Powers panel → **Add power from Local Path** → select this directory.
+- **Cursor / Windsurf / VS Code**: Place in project root or global prompt folder.
 
-Then in Kiro: Powers panel → **Add power from Local Path** → select the
-cloned directory.
-
-**Do not develop against `~/.kiro/powers/<name>/` directly.** That path is
-Kiro's managed slot for the *installed* copy, and it can be overwritten by
-Kiro's own install/sync process — clone and edit this repo somewhere else
-(e.g. `~/dev/`), then install from that path or from GitHub.
-
-This power bundles one MCP server, `mr-review-checks`. After installing — and
-after changing anything under `server/` — reconnect it from the **MCP Servers**
-view in the Kiro feature panel, or the running process keeps serving the old code
-and the old tool list. You should see
-`power-merge-flow-mr-review-checks` with 5 tools.
+This plugin bundles one MCP server, `mr-review-checks`. After installing — and
+after changing anything under `server/` — reconnect it from your IDE's **MCP Servers**
+settings, or the running process keeps serving the old code and the old tool list. You should see
+`mr-review-checks` with 5 tools.
 
 **Its five tools each prompt for approval the first time they run.** They're
 pure functions over data already fetched — no filesystem, no network — so
 choosing **Always allow** is safe and saves the run waiting on you mid-flow.
 On a first run, those prompts are most of the delay before the report appears.
+
+### Bundled MCP Tools
+
+| Tool | Purpose |
+| :--- | :--- |
+| `locate_bundled_scripts` | Returns absolute commands for the bundled helper scripts. |
+| `triage_mr_payload` | Reads the MR response and flags blockers (wrong project, merged/closed/locked, conflicts, zero comments). |
+| `reconcile_discussion_counts` | Reconciles threads, notes, and reviewer comments against `user_notes_count`. |
+| `triage_graphql_mr` | Triages the single GraphQL MR response into the normalized REST schema. |
+| `attribute_staged_hunks` | Parses `git diff --cached` into per-hunk items to verify every staged hunk has an approved review basis. |
 
 ## Check your setup before the first MR
 
@@ -154,7 +153,7 @@ node preflight.mjs --repo /path/to/your/project
 ```
 
 Every prerequisite below fails quietly and plausibly, and each one looks like a bug in
-the power rather than a gap in the setup. A stale MCP server keeps serving the previous
+the plugin rather than a gap in the setup. A stale MCP server keeps serving the previous
 tool list, so a fix appears not to have landed. `glab` installed but not authenticated
 fails at the first API call, several steps into a run. No Atlassian server means the
 workflow correctly refuses to fake a Jira check and stops to ask by hand, which reads as
@@ -187,36 +186,22 @@ deliberately left alone, since a 40-character hex string is far more often a com
 secret. Echoed output is also length-bounded.
 
 Two things it deliberately does not claim to check, because they live in the editor
-rather than on disk: whether Kiro has actually connected to the bundled server, and
+rather than on disk: whether your IDE has actually connected to the bundled server, and
 whether you have accepted the tool prompts. Both are printed as reminders instead.
 
-## Checks
+## Automated Tests
+
+Run the test suite using Node's native test runner (zero external dependencies):
 
 ```bash
-node dev/test.mjs
+npm test
 ```
 
-**This is the gate.** It runs in seconds, needs no network and no dependencies, and every
-assertion in it exists because something broke once. It covers the bundled server's
-decision modules, the manifest, the skill frontmatter, the workflow policies a rewrite
-could silently drop, credential scrubbing, and the setup check. It also times every
-function that parses input this project does not control (an MR payload, a discussions
-response, a `git diff`) against adversarial inputs, and fails on a real backtracking
-blowup rather than on a heuristic about pattern shape.
-
-`dev/eslint.config.mjs` is committed for an occasional deeper audit with
-[SonarJS](https://github.com/SonarSource/eslint-plugin-sonarjs), and its dependencies are
-deliberately **not** in the repo. The config is the shared standard, so it belongs in
-version control; the packages are 16,472 files and 79.9 MB against a power that ships as
-43 files and 3 MB, so they belong in a scratch directory outside it. The config's own
-header explains how to run it, and why it is an audit rather than a step before every
-commit.
-
-Both live under `dev/` because neither is part of the tool — the agent reads neither one.
-They still ship: the Agent Plugins manifest has no `files` field and forbids adding one, so
-installing copies the whole directory. The folder separates what a user receives from what
-a developer needs, and keeps a stray `eslint.config.mjs` out of the power root where a
-tester's editor would try to lint with a plugin they haven't installed.
+This validates:
+- **Server Initialization**: Proves the bundled `mr-review-checks` MCP server boots over stdio and responds to JSON-RPC handshakes with all 5 tools.
+- **Decision Modules**: Tests Jira ticket key parsing from conventional titles, path normalization across remote styles, discussion thread reconciliation, and git hunk attribution.
+- **Script Resolution**: Verifies that `locate_bundled_scripts` returns executable paths to `fetch-mr.mjs` and `git-context.mjs`.
+- **Preflight Diagnostics**: Validates that `preflight.mjs` executes and emits structured health checks.
 
 ## Requirements
 
@@ -228,9 +213,9 @@ tester's editor would try to lint with a plugin they haven't installed.
   ships in both POSIX and PowerShell form.
 - `node` — for the bundled `mr-review-checks` server. Zero dependencies, nothing
   to install.
-- A `glab` MCP server (or equivalent GitLab API access) configured in your own
-  `mcp.json` — this power doesn't bundle one. See
-  [Adding MCP servers](https://kiro.dev/docs/powers/create/#adding-mcp-servers).
+- A `glab` MCP server (or equivalent GitLab API access) configured in your IDE's
+  `mcp.json` — this plugin bundles `mr-review-checks` and communicates with GitLab
+  directly via `glab` CLI or configured GitLab MCP servers. See [SETUP.md](SETUP.md).
 - `git` and the `glab` CLI reachable from an **absolute** `PATH` entry. The bundled
   scripts resolve both to an absolute path themselves rather than letting the OS do
   it at spawn time, and they skip relative `PATH` entries — including the empty one
