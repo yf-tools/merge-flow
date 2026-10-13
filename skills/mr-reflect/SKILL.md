@@ -53,28 +53,41 @@ Merged/Closed MR
 
 Evaluate every reviewer feedback item against the qualification criteria:
 
-| Category | Qualification Criteria | Disposition |
-| :--- | :--- | :--- |
-| **Architectural Violations** | Layering breaches, improper dependency directions, leaking domain abstractions | **High Signal (Keep)** |
-| **Unhandled Edge Cases** | Off-by-one errors, nullability/undefined traps, concurrency/race conditions | **High Signal (Keep)** |
-| **Missing Test Types** | Omitting regression tests, failure mode assertions, integration coverage | **High Signal (Keep)** |
-| **Project & Stack Idioms** | Repository conventions (e.g. `inject()` vs constructor, specific logger patterns) | **High Signal (Keep)** |
-| **Subjective Styling** | Indentation or formatting debates already handled or ignored by the linter | **Noise (Discard)** |
-| **One-off Workarounds** | Temporary hotfixes, deprecated library quirks scheduled for deletion | **Noise (Discard)** |
-| **Conversational Banter** | Non-actionable comments, emoji reactions, ambiguous nitpicks | **Noise (Discard)** |
+| Category                     | Qualification Criteria                                                            | Disposition            |
+| :--------------------------- | :-------------------------------------------------------------------------------- | :--------------------- |
+| **Architectural Violations** | Layering breaches, improper dependency directions, leaking domain abstractions    | **High Signal (Keep)** |
+| **Unhandled Edge Cases**     | Off-by-one errors, nullability/undefined traps, concurrency/race conditions       | **High Signal (Keep)** |
+| **Missing Test Types**       | Omitting regression tests, failure mode assertions, integration coverage          | **High Signal (Keep)** |
+| **Project & Stack Idioms**   | Repository conventions (e.g. `inject()` vs constructor, specific logger patterns) | **High Signal (Keep)** |
+| **Subjective Styling**       | Indentation or formatting debates already handled or ignored by the linter        | **Noise (Discard)**    |
+| **One-off Workarounds**      | Temporary hotfixes, deprecated library quirks scheduled for deletion              | **Noise (Discard)**    |
+| **Conversational Banter**    | Non-actionable comments, emoji reactions, ambiguous nitpicks                      | **Noise (Discard)**    |
 
 ### Step 3 — Recurrence Tracking & Rule Formulation
+
+#### IDE Target Detection Hierarchy
+
+Before logging or promoting rules, detect which assistant/IDE guidelines convention is active in the workspace:
+
+| Environment             | Detected Indicator                     | Feedback Ledger Path                 | Promoted Active Rules Path                  |
+| :---------------------- | :------------------------------------- | :----------------------------------- | :------------------------------------------ |
+| **Kiro**                | `.kiro/steering/` directory exists     | `.kiro/steering/feedback-review.md`  | `.kiro/steering/{topic}.md`                 |
+| **Antigravity**         | `.agents/rules/` directory exists      | `.agents/rules/feedback-review.md`   | `.agents/rules/{topic}.md`                  |
+| **Cursor**              | `.cursor/rules/` directory exists      | `.cursor/rules/feedback-review.md`   | `.cursor/rules/{topic}.mdc` (or `.md`)      |
+| **Claude Code**         | `.claude/rules/` or `CLAUDE.md` exists | `.claude/rules/feedback-review.md`   | `.claude/rules/{topic}.md` (or `CLAUDE.md`) |
+| **Windsurf**            | `.windsurf/rules/` or `.windsurfrules` | `.windsurf/rules/feedback-review.md` | `.windsurf/rules/{topic}.md`                |
+| **Universal / Default** | None of the above                      | `.agents/rules/feedback-review.md`   | `AGENTS.md` (in workspace root)             |
 
 For each high-signal item:
 
 1. **Check the Feedback Ledger (`feedback-review.md`):**
-   - Check if the project has a feedback ledger (e.g. `.agents/rules/feedback-review.md`, `.kiro/rules/feedback-review.md`, or `.cursor/rules/feedback-review.md`).
+   - Check the resolved ledger path from the table above.
    - If an existing entry matches this pattern, increment its recurrence counter: `[x1] -> [x2] -> [x3]`.
    - If it is new, register it with count `[x1]` along with the MR reference, anti-pattern snippet, and correct pattern.
 
 2. **Evaluate Promotion Threshold:**
-   - **New patterns (`[x1]`):** Logged in the ledger for historical tracking without bloating active rules immediately.
-   - **Recurring patterns (`[x2]+`):** High priority candidates to be promoted directly into the team's active ruleset (`.agents/rules/*.md`, `.kiro/rules/*.md`, `.cursor/rules/*.md`, or `AGENTS.md`) to permanently prevent future recurrence across the team and AI assistants.
+   - **New patterns (`[x1]`):** Kept in the ledger for historical tracking without bloating active rules immediately.
+   - **Recurring patterns (`[x2]+`):** High priority candidates to be promoted directly into the team's active ruleset (e.g. `.kiro/steering/*.md`, `.agents/rules/*.md`, `.cursor/rules/*.mdc`, `.claude/rules/*.md`, or `AGENTS.md`) to permanently prevent future recurrence across the team and AI assistants.
 
 3. **Formulate Succinct Guideline:**
    - **Pattern:** Clear, positive directive.
@@ -89,21 +102,23 @@ Present the structured report to the user and stop:
 ### MergeFlow Reflection Report: MR !{iid} ({title})
 
 #### Analyzed Feedback
+
 - Total reviewer threads analyzed: {count}
 - Discarded as noise: {noise_count}
 - Qualified as high-signal: {signal_count}
 
 #### Ledger Updates & Proposed Rules
 
-1. **{Pattern Title}** `[x2 - Recurring]` *(Promote to Active Rules)*
+1. **{Pattern Title}** `[x2 - Recurring]` _(Promote to Active Rules)_
    - **Anti-Pattern:** {Description / snippet of recurring mistake}
    - **Guideline:** {What developers and AI assistants should do instead}
-   - **Target File:** `.agents/rules/{topic}.md` (or `.kiro/rules/`, `.cursor/rules/`, `AGENTS.md`)
+   - **Target File:** `{resolved_active_rules_path}/{topic}.md`
 
 2. **{New Pattern}** `[x1 - Logged]`
-   - **Logged in:** `feedback-review.md` for frequency tracking.
+   - **Logged in:** `{resolved_ledger_path}` for frequency tracking.
 
 ---
+
 Would you like to persist these updates to your feedback ledger and promote recurring rules?
 ```
 
@@ -112,4 +127,4 @@ Would you like to persist these updates to your feedback ledger and promote recu
 Upon explicit confirmation:
 
 - Update or append the entries in the target feedback ledger (`feedback-review.md`).
-- For recurring items approved for promotion (`[x2]+`), write or update the focused rule in the user's workspace rule directory (`.agents/rules/`, `.kiro/rules/`, `.cursor/rules/`, or `AGENTS.md`).
+- For recurring items approved for promotion (`[x2]+`), write or update the focused rule in the user's workspace rule directory (`.kiro/steering/`, `.agents/rules/`, `.cursor/rules/`, `.claude/rules/`, or `AGENTS.md`).
