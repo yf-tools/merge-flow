@@ -1,0 +1,13 @@
+{
+  "name": "merge-flow",
+  "owner": {
+    "name": "Youssef Fathalla"
+  },
+  "plugins": [
+    {
+      "name": "merge-flow",
+      "source": "./",
+      "description": "GitLab merge request workflow: mr-resolve (conflict & thread resolution) and mr-reflect (post-merge learning)."
+    }
+  ]
+}

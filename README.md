@@ -167,7 +167,8 @@ See the comprehensive [Team Setup & Installation Guide](SETUP.md) for step-by-st
 - **Antigravity**: Copy to `%USERPROFILE%\.gemini\config\plugins\merge-flow` (Windows) or `~/.gemini/config/plugins/merge-flow` (macOS / Linux), or use the Plugins Manager UI.
 - **Claude Code**: Load with `claude --plugin-dir <path-to-merge-flow>`, or run `claude mcp add mr-review-checks node "<path>/server/server.js"` and copy skills to `.claude/skills/`.
 - **Kiro**: Powers panel → **Add power from Local Path** → select this directory.
-- **Cursor / Windsurf / VS Code**: Place in project root or global prompt folder.
+- **Cursor**: In Settings → Plugins, click **Add plugins from folder** and select `merge-flow`, or copy to `%USERPROFILE%\.cursor\plugins\local\merge-flow`.
+- **Windsurf / VS Code**: Place in project root or reference skills in `.windsurfrules` or `AGENTS.md`.
 
 This plugin bundles one MCP server, `mr-review-checks`. After installing — and
 after changing anything under `server/` — reconnect it from your IDE's **MCP Servers**

@@ -114,9 +114,20 @@ Load the entire plugin directory or add the bundled MCP server:
 
   And copy `skills/mr-resolve` and `skills/mr-reflect` into `.claude/skills/` or `%USERPROFILE%\.claude\skills\`.
 
-### Option D: In Cursor / Windsurf / VS Code
+### Option D: In Cursor
 
-- Copy the `merge-flow` folder into your project root or reference `skills/mr-resolve/SKILL.md` and `skills/mr-reflect/SKILL.md` from your `.cursorrules`, `.windsurfrules`, or `AGENTS.md`.
+- **Via Cursor UI (Recommended):**
+  1. Open Cursor **Settings** (`Ctrl+,` / `Cmd+,`) → navigate to **Features** → **Plugins** (or **Marketplaces**).
+  2. Click **Add plugins from folder** (or **Add Custom Marketplace**).
+  3. Select the `merge-flow` directory (`%USERPROFILE%\.gemini\config\plugins\merge-flow`).
+  4. Enable the plugin and reload the window (`Developer: Reload Window`).
+
+- **Via Local Plugins Directory:**
+  - Copy or symlink `merge-flow` to `%USERPROFILE%\.cursor\plugins\local\merge-flow` (Windows) or `~/.cursor/plugins/local/merge-flow` (macOS / Linux).
+
+### Option E: In Windsurf / VS Code
+
+- Copy the `merge-flow` folder into your project root or reference `skills/mr-resolve/SKILL.md` and `skills/mr-reflect/SKILL.md` from your `.windsurfrules` or `AGENTS.md`.
 
 ---
 

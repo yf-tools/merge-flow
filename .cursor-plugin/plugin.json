@@ -1,0 +1,13 @@
+{
+  "name": "merge-flow",
+  "displayName": "Merge Flow",
+  "version": "1.0.0",
+  "description": "GitLab merge request workflow: mr-resolve (conflict & thread resolution) and mr-reflect (post-merge learning).",
+  "author": {
+    "name": "Youssef Fathalla"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/yf-tools/merge-flow",
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}
