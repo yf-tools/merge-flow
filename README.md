@@ -165,7 +165,7 @@ See the comprehensive [Team Setup & Installation Guide](SETUP.md) for step-by-st
 ### Quick start by IDE
 
 - **Antigravity**: Copy to `%USERPROFILE%\.gemini\config\plugins\merge-flow` (Windows) or `~/.gemini/config/plugins/merge-flow` (macOS / Linux), or use the Plugins Manager UI.
-- **Claude Code**: Load with `claude --plugin-dir <path-to-merge-flow>`, or run `claude mcp add mr-review-checks node "<path>/server/server.js"` and copy skills to `.claude/skills/`.
+- **Claude Code**: Run `/plugin marketplace add yf-tools/merge-flow` then `/plugin install merge-flow@merge-flow`, or load with `claude --plugin-dir <path-to-merge-flow>`.
 - **Kiro**: Powers panel → **Add power from Local Path** → select this directory.
 - **Cursor**: In Settings → Plugins, click **Add plugins from folder** and select `merge-flow`, or copy to `%USERPROFILE%\.cursor\plugins\local\merge-flow`.
 - **Windsurf / VS Code**: Place in project root or reference skills in `.windsurfrules` or `AGENTS.md`.

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "merge-flow",
+  "description": "GitLab merge request workflow: mr-resolve (conflict & thread resolution) and mr-reflect (post-merge learning).",
+  "owner": {
+    "name": "Youssef Fathalla"
+  },
+  "plugins": [
+    {
+      "name": "merge-flow",
+      "displayName": "Merge Flow",
+      "description": "GitLab merge request workflow: mr-resolve (conflict & thread resolution) and mr-reflect (post-merge learning).",
+      "version": "1.0.0",
+      "author": {
+        "name": "Youssef Fathalla"
+      },
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/yf-tools/merge-flow"
+    }
+  ]
+}

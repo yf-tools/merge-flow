@@ -102,9 +102,13 @@ In Kiro's Powers panel:
 
 ### Option C: In Claude Code
 
-Load the entire plugin directory or add the bundled MCP server:
-
-- **Load directly (recommended):**
+- **Via Plugin Marketplace (Recommended):**
+  ```bash
+  # Inside Claude Code:
+  /plugin marketplace add yf-tools/merge-flow
+  /plugin install merge-flow@merge-flow
+  ```
+- **Load directly:**
   - Run with `claude --plugin-dir <path-to-merge-flow>`
 - **Or register the bundled MCP server manually:**
 
